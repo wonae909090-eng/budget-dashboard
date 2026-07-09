@@ -1,0 +1,11 @@
+# 실제 예산/성과 데이터 (공개 저장소에 올리지 않음 — 배포 후 화면에서 직접 업로드해서 사용)
+data/*
+!data/.gitkeep
+
+# 업로드 임시 파일
+data/_uploaded_*
+
+# Python
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
