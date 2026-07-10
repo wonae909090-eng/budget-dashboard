@@ -26,9 +26,9 @@ SCENARIO_KEYWORDS = ["보수", "중립", "적극"]
 BUDGET_KEYWORDS = ["추천예산", "추천 예산", "예산추천", "예산 추천", "시나리오"] + SCENARIO_KEYWORDS
 
 RELATIVE_PERIOD_OFFSETS = {
-    "이번달": 0, "이달": 0, "최근": 0, "최신": 0, "현재": 0,
-    "지난달": -1, "전월": -1,
-    "전전달": -2, "두달전": -2,
+    "이번달": 0, "이번 달": 0, "이달": 0, "최근": 0, "최신": 0, "현재": 0,
+    "지난달": -1, "지난 달": -1, "전월": -1, "전 월": -1,
+    "전전달": -2, "전전 달": -2, "두달전": -2, "두 달 전": -2, "두달 전": -2,
 }
 
 
@@ -155,7 +155,7 @@ def answer_kpi_query(query: str, kpi_summary: dict) -> str | None:
 
 def answer_budget_query(query: str, budget_simulation: dict | None) -> str | None:
     if not budget_simulation:
-        return "먼저 '예산 추천' 페이지에서 시뮬레이션을 실행해주세요."
+        return "먼저 'Budget Simulation' 페이지에서 시뮬레이션을 실행해주세요."
 
     campaign = extract_campaign(query)
     scenario = extract_scenario(query)
@@ -225,7 +225,7 @@ def answer(
 
     if result is None:
         if kpi_summary is None and not is_budget_query(query):
-            return "먼저 '스마트올 성과 대시보드' 페이지를 방문해 데이터를 집계해주세요."
+            return "먼저 'Performance Dashboard' 페이지를 방문해 데이터를 집계해주세요."
         return FALLBACK_MESSAGE
 
     return result
