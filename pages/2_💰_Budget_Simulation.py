@@ -1,4 +1,4 @@
-"""예산 추천 & 시나리오 시뮬레이션 페이지."""
+"""예산 시뮬레이션 페이지."""
 
 import io
 import os
@@ -11,12 +11,14 @@ import streamlit as st
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from core.simulation import run_simulation  # noqa: E402
+from core.ui import CAMPAIGN_COLORS, setup_page  # noqa: E402
 
-st.set_page_config(page_title="예산 추천", layout="wide")
-st.title("💰 예산 추천 & 시나리오 시뮬레이션")
+st.set_page_config(page_title="Budget Simulation", page_icon="💰", layout="wide")
+setup_page()
+st.title("💰 예산 시뮬레이션")
 
 if "processed_df" not in st.session_state:
-    st.warning("⚠️ '데이터 확인'에서 데이터를 먼저 로드/정제해주세요.")
+    st.warning("⚠️ 'Data upload'에서 데이터를 먼저 업로드해주세요.")
     st.stop()
 
 df = st.session_state["processed_df"]
@@ -107,7 +109,7 @@ for col, campaign in zip(min_cols, all_campaigns):
         if mdb:
             min_db_counts[campaign] = mdb
 
-run_clicked = st.button("🚀 예산 추천 시뮬레이션 실행", type="primary")
+run_clicked = st.button("🚀 예산 시뮬레이션 실행", type="primary")
 
 if run_clicked:
     st.session_state["budget_simulation"] = run_simulation(
@@ -123,12 +125,12 @@ if run_clicked:
     )
 
 if "budget_simulation" not in st.session_state:
-    st.info("목표를 입력하고 '예산 추천 시뮬레이션 실행'을 클릭해주세요. (목표 미입력 시에도 기본값으로 실행 가능)")
+    st.info("목표를 입력하고 '예산 시뮬레이션 실행'을 클릭해주세요. (목표 미입력 시에도 기본값으로 실행 가능)")
     st.stop()
 
 sim = st.session_state["budget_simulation"]
 
-st.header("2. 예산 추천 시나리오 결과")
+st.header("2. 예산 시뮬레이션 결과")
 
 SCENARIO_DESC = {
     "보수": "현재 예산(최근 3개월 평균) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
@@ -155,7 +157,7 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
         else:
             m4.metric("목표 달성률", "목표 미입력")
 
-        st.subheader("캠페인별 현재예산 vs 추천예산")
+        st.subheader("캠페인별 현재예산 vs 시나리오예산")
         display_table = table.copy()
         display_table["예상DB단가"] = display_table["예상DB단가"].round(0)
         display_table["모델신뢰도(R2)"] = display_table["모델신뢰도(R2)"].round(3)
@@ -165,8 +167,9 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             id_vars="캠페인구분", value_vars=["현재예산", "시나리오예산"], var_name="구분", value_name="예산"
         )
         fig = px.bar(
-            chart_df, x="캠페인구분", y="예산", color="구분", barmode="group",
-            title=f"[{name}] 캠페인별 현재예산 vs 추천예산",
+            chart_df, x="캠페인구분", y="예산", color="캠페인구분", pattern_shape="구분",
+            color_discrete_map=CAMPAIGN_COLORS, barmode="group",
+            title=f"[{name}] 캠페인별 현재예산 vs 시나리오예산",
         )
         st.plotly_chart(fig, width="stretch")
 
@@ -187,14 +190,14 @@ combined = pd.concat(
 )
 
 csv_bytes = combined.to_csv(index=False).encode("utf-8-sig")
-st.download_button("예산 추천 시뮬레이션 결과 CSV 다운로드", data=csv_bytes, file_name="budget_simulation.csv", mime="text/csv")
+st.download_button("예산 시뮬레이션 결과 CSV 다운로드", data=csv_bytes, file_name="budget_simulation.csv", mime="text/csv")
 
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
     for name in ["보수", "중립", "적극"]:
         sim["scenarios"][name]["table"].to_excel(writer, sheet_name=name, index=False)
 st.download_button(
-    "예산 추천 시뮬레이션 결과 엑셀 다운로드",
+    "예산 시뮬레이션 결과 엑셀 다운로드",
     data=excel_buffer.getvalue(),
     file_name="budget_simulation.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

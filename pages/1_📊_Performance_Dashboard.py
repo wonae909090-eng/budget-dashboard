@@ -1,4 +1,4 @@
-"""스마트올 성과 대시보드 페이지."""
+"""성과 대시보드 페이지."""
 
 import os
 import sys
@@ -11,13 +11,15 @@ import streamlit as st
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from core.budget_model import reference_db_price  # noqa: E402
-from core.kpi_aggregation import build_kpi_summary, METRICS  # noqa: E402
+from core.kpi_aggregation import aggregate_by_campaign_month, build_kpi_summary, METRICS  # noqa: E402
+from core.ui import CAMPAIGN_COLORS, setup_page  # noqa: E402
 
-st.set_page_config(page_title="스마트올 성과 대시보드", layout="wide")
-st.title("📈 스마트올 성과 대시보드")
+st.set_page_config(page_title="Performance Dashboard", page_icon="📊", layout="wide")
+setup_page()
+st.title("📊 성과 대시보드")
 
 if "processed_df" not in st.session_state:
-    st.warning("⚠️ '데이터 확인'에서 데이터를 먼저 로드/정제해주세요.")
+    st.warning("⚠️ 'Data upload'에서 데이터를 먼저 업로드해주세요.")
     st.stop()
 
 df = st.session_state["processed_df"]
@@ -30,28 +32,12 @@ def _months_in_year(year: int) -> list[int]:
     return sorted(int(m[5:7]) for m in all_months if int(m[:4]) == year)
 
 
-with st.sidebar.expander("🎯 목표값 입력 (선택)"):
-    st.caption("입력한 캠페인만 목표 대비 달성률이 계산됩니다.")
-    targets = st.session_state.get("targets", {})
-    for campaign in all_campaigns:
-        st.markdown(f"**{campaign}**")
-        existing = targets.get(campaign) or {}
-        db_target = st.number_input(
-            f"{campaign} 목표 DB수", min_value=0, value=int(existing.get("목표DB수") or 0), key=f"target_db_{campaign}"
-        )
-        price_target = st.number_input(
-            f"{campaign} 목표 DB단가(원)", min_value=0, value=int(existing.get("목표DB단가") or 0), key=f"target_price_{campaign}"
-        )
-        budget_target = st.number_input(
-            f"{campaign} 월배정예산(원)", min_value=0, value=int(existing.get("월배정예산") or 0), key=f"target_budget_{campaign}"
-        )
-        if db_target or price_target or budget_target:
-            targets[campaign] = {
-                "목표DB수": db_target or None,
-                "목표DB단가": price_target or None,
-                "월배정예산": budget_target or None,
-            }
-    st.session_state["targets"] = targets
+def _shift_month(month: str, offset: int) -> str:
+    year, mon = int(month[:4]), int(month[5:7])
+    total = year * 12 + (mon - 1) + offset
+    new_year, new_mon = divmod(total, 12)
+    return f"{new_year:04d}-{new_mon + 1:02d}"
+
 
 # ── 필터 (요약 위에 배치) ─────────────────────────────────
 st.subheader("🔎 조회 조건")
@@ -136,22 +122,46 @@ if metric_choice == "입회율":
 
 fig_trend = px.line(
     plot_df, x="월", y=y_col, color="캠페인구분", markers=True,
+    color_discrete_map=CAMPAIGN_COLORS,
     labels={y_col: metric_choice, "월": "월"},
     title=f"캠페인별 {metric_choice} 트렌드",
 )
 st.plotly_chart(fig_trend, width='stretch')
 
-# ── 캠페인 간 비교 바차트 ────────────────────────────────
-st.header("캠페인 간 비교 (최근월 기준)")
-latest_month = campaign_monthly["월"].max()
-latest_df = campaign_monthly[campaign_monthly["월"] == latest_month]
+# ── 캠페인 간 비교 (월별 비교) ────────────────────────────
+st.header("캠페인 간 비교 (월별 비교)")
+st.caption("비교할 두 개의 월을 직접 선택할 수 있습니다. 기본값은 최근월과 전년도 동월입니다.")
+
+compare_source_df = df[df["캠페인구분"].isin(selected_campaigns)]
+compare_agg = aggregate_by_campaign_month(compare_source_df)
+compare_months = sorted(compare_agg["월"].unique())
+
+latest_compare_month = compare_months[-1]
+default_prev_month = _shift_month(latest_compare_month, -12)
+if default_prev_month not in compare_months:
+    default_prev_month = compare_months[0]
+
+cmp_col1, cmp_col2 = st.columns(2)
+month_a = cmp_col1.selectbox(
+    "비교월 A", compare_months, index=compare_months.index(latest_compare_month), key="cmp_month_a"
+)
+month_b = cmp_col2.selectbox(
+    "비교월 B (기본: 전년 동월)", compare_months, index=compare_months.index(default_prev_month), key="cmp_month_b"
+)
+
+cmp_df = compare_agg[compare_agg["월"].isin([month_a, month_b])].copy()
+cmp_df["입회율(%)"] = cmp_df["입회율"] * 100
 
 col_a, col_b = st.columns(2)
 with col_a:
-    fig_price = px.bar(latest_df, x="캠페인구분", y="DB단가", title=f"{latest_month} DB단가 비교", text_auto=".0f")
+    fig_price = px.bar(
+        cmp_df, x="캠페인구분", y="DB단가", color="캠페인구분", pattern_shape="월",
+        color_discrete_map=CAMPAIGN_COLORS, barmode="group", text_auto=".0f",
+        title=f"DB단가 비교 ({month_a} vs {month_b})",
+    )
 
     targets_dict = st.session_state.get("targets", {})
-    campaign_order = list(latest_df["캠페인구분"])
+    campaign_order = sorted(cmp_df["캠페인구분"].unique())
     for i, campaign in enumerate(campaign_order):
         camp_hist_df = df[df["캠페인구분"] == campaign]
         target_price = (targets_dict.get(campaign) or {}).get("목표DB단가")
@@ -169,9 +179,11 @@ with col_a:
     st.plotly_chart(fig_price, width='stretch')
     st.caption("점선 = 캠페인별 목표 DB단가(미입력 시 최근 12개월 가중평균 DB단가)")
 with col_b:
-    latest_df_pct = latest_df.copy()
-    latest_df_pct["입회율(%)"] = latest_df_pct["입회율"] * 100
-    fig_rate = px.bar(latest_df_pct, x="캠페인구분", y="입회율(%)", title=f"{latest_month} 입회율 비교", text_auto=".1f")
+    fig_rate = px.bar(
+        cmp_df, x="캠페인구분", y="입회율(%)", color="캠페인구분", pattern_shape="월",
+        color_discrete_map=CAMPAIGN_COLORS, barmode="group", text_auto=".1f",
+        title=f"입회율 비교 ({month_a} vs {month_b})",
+    )
     st.plotly_chart(fig_rate, width='stretch')
 
 # ── MoM/YoY 증감 테이블 ──────────────────────────────────
@@ -194,14 +206,44 @@ styled = change_df.style.map(_color_pos_neg, subset=numeric_change_cols).format(
 st.dataframe(styled, width='stretch', height=400)
 
 # ── 목표 대비 달성률 ─────────────────────────────────────
+st.header("🎯 목표 대비 달성률")
+
+with st.expander("목표값 입력", expanded=not any(st.session_state.get("targets", {}).values())):
+    st.caption("입력한 캠페인만 목표 대비 달성률이 계산됩니다.")
+    targets = st.session_state.get("targets", {})
+    target_cols = st.columns(len(all_campaigns))
+    for col, campaign in zip(target_cols, all_campaigns):
+        with col:
+            st.markdown(f"**{campaign}**")
+            existing = targets.get(campaign) or {}
+            db_target = st.number_input(
+                f"{campaign} 목표 DB수", min_value=0, value=int(existing.get("목표DB수") or 0), key=f"target_db_{campaign}"
+            )
+            price_target = st.number_input(
+                f"{campaign} 목표 DB단가(원)", min_value=0, value=int(existing.get("목표DB단가") or 0), key=f"target_price_{campaign}"
+            )
+            budget_target = st.number_input(
+                f"{campaign} 월배정예산(원)", min_value=0, value=int(existing.get("월배정예산") or 0), key=f"target_budget_{campaign}"
+            )
+            if db_target or price_target or budget_target:
+                targets[campaign] = {
+                    "목표DB수": db_target or None,
+                    "목표DB단가": price_target or None,
+                    "월배정예산": budget_target or None,
+                }
+    st.session_state["targets"] = targets
+
 if any(st.session_state.get("targets", {}).values()):
-    st.header("목표 대비 달성률")
+    kpi = build_kpi_summary(filtered_df, targets=st.session_state.get("targets"))
+    campaign_monthly = kpi["campaign_monthly"]
     achievement_cols = ["캠페인구분", "월", "DB수_달성률", "DB단가_달성률", "예산_달성률"]
     if set(achievement_cols).issubset(campaign_monthly.columns):
         ach_df = campaign_monthly[achievement_cols].copy()
         for c in ["DB수_달성률", "DB단가_달성률", "예산_달성률"]:
             ach_df[c] = ach_df[c].apply(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "목표 미입력")
         st.dataframe(ach_df, width='stretch')
+else:
+    st.info("목표값을 입력하면 목표 대비 달성률이 여기에 표시됩니다.")
 
 # ── 데이터 품질 플래그 ───────────────────────────────────
 quality_issues = filtered_df[filtered_df["flag_outlier"] | filtered_df["flag_inconsistent"]]
