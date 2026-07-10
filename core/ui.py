@@ -21,7 +21,8 @@ def render_header() -> None:
             st.image(_LOGO_PATH, width=160)
     with col_title:
         st.markdown(
-            "<div style='font-size:1.6rem; font-weight:800;'>AI Decision Partner for Digital Marketing</div>",
+            "<div style='font-size:2.72rem; font-weight:800; color:#0B2545;'>"
+            "AI Decision Partner for Digital Marketing 😉</div>",
             unsafe_allow_html=True,
         )
     st.divider()

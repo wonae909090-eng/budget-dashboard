@@ -150,41 +150,52 @@ month_b = cmp_col2.selectbox(
 )
 
 cmp_df = compare_agg[compare_agg["월"].isin([month_a, month_b])].copy()
-cmp_df["입회율(%)"] = cmp_df["입회율"] * 100
+
+
+def _render_compare_chart(metric: str) -> None:
+    plot_df = cmp_df.copy()
+    y_col = metric
+    if metric == "입회율":
+        y_col = "입회율(%)"
+        plot_df[y_col] = plot_df["입회율"] * 100
+
+    fig = px.bar(
+        plot_df, x="캠페인구분", y=y_col, color="캠페인구분", pattern_shape="월",
+        color_discrete_map=CAMPAIGN_COLORS, barmode="group",
+        text_auto=".1f" if metric == "입회율" else ".0f",
+        title=f"{metric} 비교 ({month_a} vs {month_b})",
+    )
+
+    if metric == "DB단가":
+        targets_dict = st.session_state.get("targets", {})
+        campaign_order = sorted(plot_df["캠페인구분"].unique())
+        for i, campaign in enumerate(campaign_order):
+            camp_hist_df = df[df["캠페인구분"] == campaign]
+            target_price = (targets_dict.get(campaign) or {}).get("목표DB단가")
+            ref_price = reference_db_price(camp_hist_df, target_price)
+            fig.add_shape(
+                type="line", xref="x", yref="y",
+                x0=i - 0.4, x1=i + 0.4, y0=ref_price, y1=ref_price,
+                line=dict(color="red", dash="dash", width=2),
+            )
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="lines",
+            line=dict(color="red", dash="dash"),
+            name="기준 DB단가(목표 또는 과거12개월 평균)",
+        ))
+
+    st.plotly_chart(fig, width='stretch')
+    if metric == "DB단가":
+        st.caption("점선 = 캠페인별 목표 DB단가(미입력 시 최근 12개월 가중평균 DB단가)")
+
 
 col_a, col_b = st.columns(2)
 with col_a:
-    fig_price = px.bar(
-        cmp_df, x="캠페인구분", y="DB단가", color="캠페인구분", pattern_shape="월",
-        color_discrete_map=CAMPAIGN_COLORS, barmode="group", text_auto=".0f",
-        title=f"DB단가 비교 ({month_a} vs {month_b})",
-    )
-
-    targets_dict = st.session_state.get("targets", {})
-    campaign_order = sorted(cmp_df["캠페인구분"].unique())
-    for i, campaign in enumerate(campaign_order):
-        camp_hist_df = df[df["캠페인구분"] == campaign]
-        target_price = (targets_dict.get(campaign) or {}).get("목표DB단가")
-        ref_price = reference_db_price(camp_hist_df, target_price)
-        fig_price.add_shape(
-            type="line", xref="x", yref="y",
-            x0=i - 0.4, x1=i + 0.4, y0=ref_price, y1=ref_price,
-            line=dict(color="red", dash="dash", width=2),
-        )
-    fig_price.add_trace(go.Scatter(
-        x=[None], y=[None], mode="lines",
-        line=dict(color="red", dash="dash"),
-        name="기준 DB단가(목표 또는 과거12개월 평균)",
-    ))
-    st.plotly_chart(fig_price, width='stretch')
-    st.caption("점선 = 캠페인별 목표 DB단가(미입력 시 최근 12개월 가중평균 DB단가)")
+    metric_left = st.selectbox("좌측 비교 지표", METRICS, index=METRICS.index("DB단가"), key="cmp_metric_left")
+    _render_compare_chart(metric_left)
 with col_b:
-    fig_rate = px.bar(
-        cmp_df, x="캠페인구분", y="입회율(%)", color="캠페인구분", pattern_shape="월",
-        color_discrete_map=CAMPAIGN_COLORS, barmode="group", text_auto=".1f",
-        title=f"입회율 비교 ({month_a} vs {month_b})",
-    )
-    st.plotly_chart(fig_rate, width='stretch')
+    metric_right = st.selectbox("우측 비교 지표", METRICS, index=METRICS.index("입회율"), key="cmp_metric_right")
+    _render_compare_chart(metric_right)
 
 # ── MoM/YoY 증감 테이블 ──────────────────────────────────
 st.header("MoM / YoY 증감률")
@@ -236,12 +247,60 @@ with st.expander("목표값 입력", expanded=not any(st.session_state.get("targ
 if any(st.session_state.get("targets", {}).values()):
     kpi = build_kpi_summary(filtered_df, targets=st.session_state.get("targets"))
     campaign_monthly = kpi["campaign_monthly"]
-    achievement_cols = ["캠페인구분", "월", "DB수_달성률", "DB단가_달성률", "예산_달성률"]
+    achievement_cols = ["캠페인구분", "월", "광고비", "DB수", "DB단가", "DB수_달성률", "DB단가_달성률", "예산_달성률"]
     if set(achievement_cols).issubset(campaign_monthly.columns):
-        ach_df = campaign_monthly[achievement_cols].copy()
+        ach_months = sorted(campaign_monthly["월"].unique())
+        ach_month = st.selectbox("조회월", ach_months, index=len(ach_months) - 1, key="ach_month")
+
+        ach_raw = campaign_monthly[campaign_monthly["월"] == ach_month][achievement_cols].copy()
+
+        targets_dict = st.session_state.get("targets", {})
+
+        def _row_of(campaign: str) -> pd.Series:
+            return ach_raw[ach_raw["캠페인구분"] == campaign].iloc[0]
+
+        # 지표별로 "해당 목표가 입력된 캠페인"만 일관되게 묶어서 합계를 낸다.
+        # (목표가 없는 캠페인의 실제값이 분자에 섞여 달성률이 왜곡되는 것을 방지)
+        db_scope = [c for c in selected_campaigns if (targets_dict.get(c) or {}).get("목표DB수")]
+        budget_scope = [c for c in selected_campaigns if (targets_dict.get(c) or {}).get("월배정예산")]
+        price_scope = [c for c in selected_campaigns if (targets_dict.get(c) or {}).get("목표DB단가")]
+
+        total_budget = sum(_row_of(c)["광고비"] for c in selected_campaigns)
+        total_db = sum(_row_of(c)["DB수"] for c in selected_campaigns)
+        total_db_price = total_budget / total_db if total_db else float("nan")
+
+        db_actual = sum(_row_of(c)["DB수"] for c in db_scope)
+        db_target = sum((targets_dict.get(c) or {}).get("목표DB수") or 0 for c in db_scope)
+
+        budget_actual = sum(_row_of(c)["광고비"] for c in budget_scope)
+        budget_target = sum((targets_dict.get(c) or {}).get("월배정예산") or 0 for c in budget_scope)
+
+        price_actual_budget = sum(_row_of(c)["광고비"] for c in price_scope)
+        price_actual_db = sum(_row_of(c)["DB수"] for c in price_scope)
+        price_actual = (price_actual_budget / price_actual_db) if price_actual_db else None
+        price_target_avg = (
+            sum((targets_dict.get(c) or {}).get("목표DB단가") or 0 for c in price_scope) / len(price_scope)
+            if price_scope else None
+        )
+
+        total_row = pd.DataFrame([{
+            "캠페인구분": "합계",
+            "월": ach_month,
+            "광고비": total_budget,
+            "DB수": total_db,
+            "DB단가": total_db_price,
+            "DB수_달성률": (db_actual / db_target) if db_target else None,
+            "DB단가_달성률": (price_target_avg / price_actual) if price_target_avg and price_actual else None,
+            "예산_달성률": (budget_actual / budget_target) if budget_target else None,
+        }])
+
+        ach_df = pd.concat([ach_raw, total_row], ignore_index=True)
+        display_cols = ["캠페인구분", "월", "DB수_달성률", "DB단가_달성률", "예산_달성률"]
+        ach_df = ach_df[display_cols]
         for c in ["DB수_달성률", "DB단가_달성률", "예산_달성률"]:
             ach_df[c] = ach_df[c].apply(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "목표 미입력")
         st.dataframe(ach_df, width='stretch')
+        st.caption("'합계' 행은 위 조회조건에서 선택한 캠페인들의 합산 기준입니다.")
 else:
     st.info("목표값을 입력하면 목표 대비 달성률이 여기에 표시됩니다.")
 
