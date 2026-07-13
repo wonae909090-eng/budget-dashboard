@@ -51,3 +51,29 @@ def setup_page() -> None:
     """페이지 진입 시 공통으로 호출: 사이드바 스타일 + 상단 헤더 배너."""
     apply_sidebar_style()
     render_header()
+
+
+def campaign_badge_html(campaign: str) -> str:
+    """캠페인명을 고유 색상의 둥근 배지(뱃지) HTML로 반환."""
+    color = CAMPAIGN_COLORS.get(campaign, "#666666")
+    return (
+        f"<span style='background-color:{color}; color:#ffffff; font-weight:700; "
+        f"padding:3px 12px; border-radius:12px; display:inline-block;'>{campaign}</span>"
+    )
+
+
+def campaign_badge(campaign: str) -> None:
+    """campaign_badge_html()을 바로 렌더링."""
+    st.markdown(campaign_badge_html(campaign), unsafe_allow_html=True)
+
+
+def style_campaign_rows(df, col: str = "캠페인구분"):
+    """DataFrame의 캠페인 컬럼 값에 따라 행 배경색을 캠페인 고유 색상(옅은 톤)으로 칠한 Styler 반환."""
+
+    def _row_style(row):
+        color = CAMPAIGN_COLORS.get(row[col])
+        if not color:
+            return [""] * len(row)
+        return [f"background-color:{color}22"] * len(row)
+
+    return df.style.apply(_row_style, axis=1)

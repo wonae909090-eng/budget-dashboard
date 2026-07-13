@@ -7,8 +7,6 @@ import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from core.ai_insights import explain_simulation  # noqa: E402
-from core.budget_model import build_model_report  # noqa: E402
 from core.chatbot import answer  # noqa: E402
 from core.kpi_aggregation import build_kpi_summary  # noqa: E402
 from core.ui import setup_page  # noqa: E402
@@ -57,20 +55,6 @@ with st.expander("💡 질문 예시 더보기"):
         "- 적극 시나리오 키즈 캠페인 예산은?\n"
         "- 보수 시나리오 결과 알려줘"
     )
-
-st.header("🤖 AI 해석 (선택)")
-st.caption(
-    "회귀 계산 자체는 그대로 두고, 그 결과를 Claude가 문장으로 설명해주는 기능입니다. "
-    "숫자는 항상 회귀 모델이 계산한 값 그대로이며, AI는 해석만 덧붙입니다."
-)
-if not budget_simulation:
-    st.info("'Budget Simulation' 페이지에서 시뮬레이션을 먼저 실행하면 이 기능을 쓸 수 있습니다.")
-else:
-    if st.button("🤖 예산 시뮬레이션 결과 AI로 해석하기"):
-        with st.spinner("Claude가 결과를 해석하는 중..."):
-            model_report = build_model_report(df)
-            explanation = explain_simulation(budget_simulation, model_report)
-        st.markdown(explanation)
 
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []

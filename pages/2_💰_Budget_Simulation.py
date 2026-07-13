@@ -10,8 +10,10 @@ import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from core.ai_insights import explain_simulation  # noqa: E402
+from core.budget_model import build_model_report  # noqa: E402
 from core.simulation import run_simulation  # noqa: E402
-from core.ui import CAMPAIGN_COLORS, setup_page  # noqa: E402
+from core.ui import CAMPAIGN_COLORS, campaign_badge, setup_page, style_campaign_rows  # noqa: E402
 
 st.set_page_config(page_title="Budget Simulation", page_icon="💰", layout="wide")
 setup_page()
@@ -41,7 +43,7 @@ def _future_months(last_month: str, n: int = 12) -> list[str]:
 
 
 # ── 목표 입력 폼 ───────────────────────────────────────
-st.header("1. 목표 입력")
+st.subheader("목표 입력")
 
 last_data_month = max(df["월"])
 future_month_options = _future_months(last_data_month)
@@ -62,7 +64,7 @@ if allocation_mode == "캠페인별 개별 입력":
     cols = st.columns(len(all_campaigns))
     for col, campaign in zip(cols, all_campaigns):
         with col:
-            st.markdown(f"**{campaign}**")
+            campaign_badge(campaign)
             db_count = st.number_input(f"{campaign} 목표 DB수", min_value=0, value=0, key=f"sim_db_{campaign}")
             db_price = st.number_input(f"{campaign} 목표 DB단가(원)", min_value=0, value=0, key=f"sim_price_{campaign}")
             if db_count:
@@ -85,23 +87,33 @@ else:
     if overall_target_db_price:
         target_prices = {c: overall_target_db_price for c in all_campaigns}
 
-st.subheader("1-1. 총예산 설정 (선택)")
+st.subheader("총예산 설정 (선택)")
 st.caption("0이면 시나리오별로 회귀모델이 추천하는 자연스러운 총액을 그대로 사용합니다. 값을 입력하면 각 시나리오의 배분 비율은 유지한 채 총액을 이 값에 맞춥니다.")
 overall_total_budget = st.number_input("전체 목표 총예산(원)", min_value=0, value=0, step=10_000_000)
 
-st.subheader("1-2. 캠페인별 최소 보장 조건 (선택)")
+st.caption("캠페인별로 '이 금액을 정확히 배정'하고 싶다면 아래에 입력하세요. 입력한 캠페인은 모든 시나리오에서 그 금액 그대로 고정되고, 나머지 예산만 다른 캠페인들에게 배분됩니다.")
+fixed_budgets: dict = {}
+fixed_cols = st.columns(len(all_campaigns))
+for col, campaign in zip(fixed_cols, all_campaigns):
+    with col:
+        campaign_badge(campaign)
+        fb = st.number_input(f"{campaign} 총예산(원)", min_value=0, value=0, step=10_000_000, key=f"fixed_budget_{campaign}")
+        if fb:
+            fixed_budgets[campaign] = fb
+
+st.subheader("캠페인별 최소 보장 조건 (선택)")
 st.caption(
-    "각 캠페인에 최소한 배정해야 하는 집행비용과, 최소한 확보해야 하는 DB수입니다. "
+    "각 캠페인에 최소한 배정해야 하는 집행비용과, 최소한 확보해야 하는 DB수입니다(위에서 총예산을 고정한 캠페인에는 적용되지 않습니다). "
     "보수·중립 시나리오는 두 조건을 모두 반영하고, 적극 시나리오는 효율 극대화 취지를 지키기 위해 "
     "최소 집행비용만 반영하며 최소 DB목표는 미달 시 경고로만 표시합니다. "
-    "최소값 합계가 총예산을 넘으면 총예산을 넘지 않도록 최소값을 비례 축소합니다."
+    "최소값 합계가 남은 예산을 넘으면 그 예산을 넘지 않도록 최소값을 비례 축소합니다."
 )
 min_budgets: dict = {}
 min_db_counts: dict = {}
 min_cols = st.columns(len(all_campaigns))
 for col, campaign in zip(min_cols, all_campaigns):
     with col:
-        st.markdown(f"**{campaign}**")
+        campaign_badge(campaign)
         mb = st.number_input(f"{campaign} 최소 집행비용(원)", min_value=0, value=0, key=f"min_budget_{campaign}")
         mdb = st.number_input(f"{campaign} 최소 DB목표(건)", min_value=0, value=0, key=f"min_db_{campaign}")
         if mb:
@@ -122,6 +134,7 @@ if run_clicked:
         overall_total_budget=overall_total_budget or None,
         min_budgets=min_budgets or None,
         min_db_counts=min_db_counts or None,
+        fixed_budgets=fixed_budgets or None,
     )
 
 if "budget_simulation" not in st.session_state:
@@ -130,7 +143,7 @@ if "budget_simulation" not in st.session_state:
 
 sim = st.session_state["budget_simulation"]
 
-st.header("2. 예산 시뮬레이션 결과")
+st.subheader("예산 시뮬레이션 결과")
 
 SCENARIO_DESC = {
     "보수": "현재 예산(최근 3개월 평균) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
@@ -157,11 +170,11 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
         else:
             m4.metric("목표 달성률", "목표 미입력")
 
-        st.subheader("캠페인별 현재예산 vs 시나리오예산")
+        st.markdown("**캠페인별 현재예산 vs 시나리오예산**")
         display_table = table.copy()
         display_table["예상DB단가"] = display_table["예상DB단가"].round(0)
         display_table["모델신뢰도(R2)"] = display_table["모델신뢰도(R2)"].round(3)
-        st.dataframe(display_table, width="stretch")
+        st.dataframe(style_campaign_rows(display_table), width="stretch")
 
         chart_df = table.melt(
             id_vars="캠페인구분", value_vars=["현재예산", "시나리오예산"], var_name="구분", value_name="예산"
@@ -182,8 +195,20 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
                 "— 예산 추천값을 참고용으로만 활용하세요."
             )
 
+# ── AI 해석 ────────────────────────────────────────────
+st.subheader("🤖 AI 해석 (선택)")
+st.caption(
+    "회귀 계산 자체는 그대로 두고, 그 결과를 Claude가 문장으로 설명해주는 기능입니다. "
+    "숫자는 항상 회귀 모델이 계산한 값 그대로이며, AI는 해석만 덧붙입니다."
+)
+if st.button("🤖 예산 시뮬레이션 결과 AI로 해석하기"):
+    with st.spinner("Claude가 결과를 해석하는 중..."):
+        model_report = build_model_report(df)
+        explanation = explain_simulation(sim, model_report)
+    st.markdown(explanation)
+
 # ── 다운로드 ───────────────────────────────────────────
-st.header("3. 다운로드")
+st.subheader("다운로드")
 combined = pd.concat(
     [sim["scenarios"][name]["table"].assign(시나리오=name) for name in ["보수", "중립", "적극"]],
     ignore_index=True,

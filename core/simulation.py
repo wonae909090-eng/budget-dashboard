@@ -85,6 +85,33 @@ def aggressive_allocation(
     return {c: total_pool * (w / weight_sum) for c, w in weights.items()}
 
 
+def apply_fixed_budgets(
+    desired: dict, fixed_budgets: dict, total_target: float
+) -> tuple[dict, dict, float, list[str]]:
+    """캠페인별 고정 총예산(fixed_budgets)을 먼저 배정하고, 나머지 캠페인·예산을 반환.
+
+    고정값 합계가 total_target을 넘으면 총예산을 절대 넘지 않도록 고정값 전체를 비례 축소한다
+    (이 경우 미고정 캠페인에게 남는 예산은 0이 됨).
+    """
+    warnings: list[str] = []
+    fixed = {c: v for c, v in fixed_budgets.items() if c in desired and v}
+    fixed_sum = sum(fixed.values())
+
+    unfixed_desired = {c: v for c, v in desired.items() if c not in fixed}
+
+    if fixed_sum > total_target:
+        scale = (total_target / fixed_sum) if fixed_sum > 0 else 0.0
+        warnings.append(
+            f"캠페인별 고정 총예산 합계({fixed_sum:,.0f}원)가 총예산({total_target:,.0f}원)을 초과해, "
+            f"총예산을 넘지 않도록 고정 총예산을 비례 축소했습니다(축소율 {scale * 100:.0f}%). "
+            "미고정 캠페인에는 남는 예산이 없어 0원이 배정됩니다."
+        )
+        return {c: v * scale for c, v in fixed.items()}, unfixed_desired, 0.0, warnings
+
+    remaining_total = total_target - fixed_sum
+    return dict(fixed), unfixed_desired, remaining_total, warnings
+
+
 def apply_floor_constraints(desired: dict, floors: dict, total_target: float) -> tuple[dict, list[str]]:
     """floors(캠페인별 최소 보장 예산)를 지키면서 desired 비중으로 나머지를 배분.
 
@@ -122,15 +149,20 @@ def run_simulation(
     overall_total_budget: float | None = None,
     min_budgets: dict | None = None,
     min_db_counts: dict | None = None,
+    fixed_budgets: dict | None = None,
 ) -> dict:
     """보수/중립/적극 3개 시나리오를 계산해 결과 dict로 반환.
 
     - overall_total_budget이 주어지면 각 시나리오의 배분 '비율'은 유지한 채 총액을 이 값에 맞춘다.
       (미지정 시 각 시나리오 고유의 자연스러운 총액을 그대로 사용)
-    - min_budgets/min_db_counts는 캠페인별 최소 보장값(floor). 보수·중립 시나리오는 최소
-      집행비용과 최소 DB목표를 모두 강제하고, 적극 시나리오는 최소 집행비용만 강제하고
-      최소 DB목표는 미달 시 경고만 표시한다(효율 극대화 취지 유지).
-    - floor 합계가 총예산을 넘으면, 총예산을 넘지 않도록 floor 전체를 비례 축소한다.
+    - fixed_budgets는 캠페인별로 "정확히 이 금액을 배정"하는 고정값이다. 고정된 캠페인은 시나리오
+      배분 로직을 거치지 않고 그 값을 그대로 쓰며, 남은 예산(총예산-고정값 합계)만 미고정
+      캠페인들에게 기존 로직(floor+비중 배분)으로 나눈다. 고정값 합계가 총예산을 넘으면 총예산을
+      넘지 않도록 고정값 전체를 비례 축소한다.
+    - min_budgets/min_db_counts는 캠페인별 최소 보장값(floor, 미고정 캠페인에만 적용). 보수·중립
+      시나리오는 최소 집행비용과 최소 DB목표를 모두 강제하고, 적극 시나리오는 최소 집행비용만
+      강제하고 최소 DB목표는 미달 시 경고만 표시한다(효율 극대화 취지 유지).
+    - floor 합계가 남은 예산을 넘으면, 그 예산을 넘지 않도록 floor 전체를 비례 축소한다.
     """
     base_rec = build_budget_recommendations(
         df, method="target_price", target_prices=target_prices, target_month=target_month
@@ -139,6 +171,7 @@ def run_simulation(
     is_peak = _target_is_peak(target_month)
     min_budgets = min_budgets or {}
     min_db_counts = min_db_counts or {}
+    fixed_budgets = fixed_budgets or {}
 
     models = {c: fit_campaign_model(df[df["캠페인구분"] == c]) for c in base_rec["캠페인구분"]}
 
@@ -155,8 +188,14 @@ def run_simulation(
         total_target = overall_total_budget or natural_total
 
         warnings: list[str] = []
+
+        fixed_final, unfixed_desired, remaining_total, fixed_warnings = apply_fixed_budgets(
+            desired, fixed_budgets, total_target
+        )
+        warnings.extend(fixed_warnings)
+
         floors = {}
-        for campaign in desired:
+        for campaign in unfixed_desired:
             camp_df = df[df["캠페인구분"] == campaign]
             floor = float(min_budgets.get(campaign) or 0)
             if enforce_db_floor and min_db_counts.get(campaign):
@@ -171,8 +210,9 @@ def run_simulation(
                 floor = max(floor, needed)
             floors[campaign] = floor
 
-        final_budgets, floor_warnings = apply_floor_constraints(desired, floors, total_target)
+        floor_final, floor_warnings = apply_floor_constraints(unfixed_desired, floors, remaining_total)
         warnings.extend(floor_warnings)
+        final_budgets = {**fixed_final, **floor_final}
 
         if not enforce_db_floor:
             for campaign in desired:
