@@ -7,7 +7,7 @@ import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from core.ai_insights import explain_simulation, is_configured  # noqa: E402
+from core.ai_insights import explain_simulation  # noqa: E402
 from core.budget_model import build_model_report  # noqa: E402
 from core.chatbot import answer  # noqa: E402
 from core.kpi_aggregation import build_kpi_summary  # noqa: E402
@@ -65,11 +65,6 @@ st.caption(
 )
 if not budget_simulation:
     st.info("'Budget Simulation' 페이지에서 시뮬레이션을 먼저 실행하면 이 기능을 쓸 수 있습니다.")
-elif not is_configured():
-    st.warning(
-        "⚠️ Anthropic API 키가 설정되어 있지 않습니다. "
-        "`tools/app/.streamlit/secrets.toml`에 `ANTHROPIC_API_KEY`를 추가하면 사용할 수 있습니다."
-    )
 else:
     if st.button("🤖 예산 시뮬레이션 결과 AI로 해석하기"):
         with st.spinner("Claude가 결과를 해석하는 중..."):

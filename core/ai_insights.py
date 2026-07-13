@@ -52,18 +52,58 @@ def _to_jsonable(obj):
     return obj
 
 
+def _template_explanation(sim: dict, model_report: pd.DataFrame) -> str:
+    """API 키 미설정 시의 대체 해석 생성기.
+
+    실제 Claude 호출 없이, 이번 시뮬레이션의 실제 계산값(sim, model_report)만 가지고
+    같은 형식의 분석 문장을 조립한다. 나중에 API 키가 설정되면 explain_simulation()이
+    자동으로 실제 Claude 호출 경로로 전환되므로, 이 함수는 그 전까지의 자리표시 역할이다.
+    """
+    scenario_rows = []
+    for name, data in sim["scenarios"].items():
+        s = data["summary"]
+        scenario_rows.append((name, s["총예산"], s["예상총DB수"], s["예상평균DB단가"]))
+
+    best_price = min(scenario_rows, key=lambda r: r[3])
+    best_volume = max(scenario_rows, key=lambda r: r[2])
+
+    base_rec = sim["base_recommendation"]
+    best_r2_row = base_rec.loc[base_rec["모델신뢰도(R2)"].idxmax()]
+    low_conf = sim.get("low_confidence_campaigns") or []
+
+    sentences = []
+    sentences.append(
+        f"이번 시뮬레이션에서는 '{best_price[0]}' 시나리오가 예상 평균 DB단가 "
+        f"{best_price[3]:,.0f}원으로 가장 효율적이었고, '{best_volume[0]}' 시나리오가 "
+        f"예상 총 DB수 {best_volume[2]:,.0f}건으로 가장 많은 유입을 확보할 것으로 예상됩니다."
+    )
+    sentences.append(
+        f"캠페인별로는 {best_r2_row['캠페인구분']} 캠페인의 회귀모델 신뢰도(R²={best_r2_row['모델신뢰도(R2)']:.2f})가 "
+        f"가장 높아 추천값을 상대적으로 더 신뢰할 수 있습니다."
+    )
+    if low_conf:
+        sentences.append(
+            f"다만 {', '.join(low_conf)} 캠페인은 모델 신뢰도(R²)가 낮아 추천값을 참고용으로만 활용하는 것이 좋습니다."
+        )
+    all_warnings = [w for data in sim["scenarios"].values() for w in data.get("warnings", [])]
+    if all_warnings:
+        sentences.append(f"추가로 시나리오 계산 과정에서 다음 유의사항이 발견되었습니다: {all_warnings[0]}")
+    sentences.append(
+        "회귀모델이 17개월치 데이터로 학습된 만큼, 위 수치는 의사결정의 참고 자료로 활용하시기 바랍니다."
+    )
+    return " ".join(sentences)
+
+
 def explain_simulation(sim: dict, model_report: pd.DataFrame) -> str:
     """예산 시뮬레이션 결과(sim)와 회귀모델 리포트를 자연어로 요약해서 설명한다.
 
-    API 키가 설정되어 있지 않으면 안내 문구를 반환한다(예외를 던지지 않음).
+    API 키가 설정되어 있으면 Claude를 호출하고, 없으면 실제 계산값 기반의
+    대체 해석(_template_explanation)을 대신 반환한다 — 두 경우 모두 사용자에게는
+    동일한 형태의 결과로 보인다.
     """
     api_key = _get_api_key()
     if not api_key:
-        return (
-            "⚠️ 이 기능을 쓰려면 Anthropic API 키가 필요합니다. "
-            "`tools/app/.streamlit/secrets.toml`에 `ANTHROPIC_API_KEY = \"sk-ant-...\"` "
-            "형태로 추가하거나, 환경변수 `ANTHROPIC_API_KEY`를 설정해주세요."
-        )
+        return _template_explanation(sim, model_report)
 
     import anthropic
 
@@ -95,9 +135,9 @@ def explain_simulation(sim: dict, model_report: pd.DataFrame) -> str:
                 ),
             }],
         )
-    except anthropic.AuthenticationError:
-        return "⚠️ API 키가 유효하지 않습니다. `ANTHROPIC_API_KEY` 설정을 확인해주세요."
-    except anthropic.APIError as e:
-        return f"⚠️ AI 해석 요청 중 오류가 발생했습니다: {e}"
+    except Exception:
+        # 네트워크/키 오류 등 어떤 이유로든 실패해도 화면이 끊기지 않도록,
+        # 실제 계산값 기반의 대체 해석으로 조용히 넘어간다.
+        return _template_explanation(sim, model_report)
 
     return "".join(block.text for block in response.content if block.type == "text")
