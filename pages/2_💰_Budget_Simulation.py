@@ -172,9 +172,20 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
 
         st.markdown("**캠페인별 현재예산 vs 시나리오예산**")
         display_table = table.copy()
-        display_table["예상DB단가"] = display_table["예상DB단가"].round(0)
-        display_table["모델신뢰도(R2)"] = display_table["모델신뢰도(R2)"].round(3)
-        st.dataframe(style_campaign_rows(display_table), width="stretch")
+        styled_table = (
+            style_campaign_rows(display_table)
+            .format(
+                {
+                    "현재예산": "{:,.0f}",
+                    "시나리오예산": "{:,.0f}",
+                    "예상DB수": "{:,.0f}",
+                    "예상DB단가": "{:,.0f}",
+                    "모델신뢰도(R2)": "{:.1%}",
+                }
+            )
+            .hide(axis="index")
+        )
+        st.dataframe(styled_table, width="stretch")
 
         chart_df = table.melt(
             id_vars="캠페인구분", value_vars=["현재예산", "시나리오예산"], var_name="구분", value_name="예산"
@@ -196,7 +207,9 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             )
 
 # ── AI 해석 ────────────────────────────────────────────
-st.subheader("🤖 AI 해석 (선택)")
+# 이모지 뒤에 굵은 글씨가 오면 Windows Chromium이 이모지를 흑백 기호 폰트로 대체하는 문제가 있어
+# 이모지만 font-weight:400으로 분리 지정
+st.markdown("### <span style='font-weight:400;'>🤖</span> AI 해석 (선택)", unsafe_allow_html=True)
 st.caption(
     "회귀 계산 자체는 그대로 두고, 그 결과를 Claude가 문장으로 설명해주는 기능입니다. "
     "숫자는 항상 회귀 모델이 계산한 값 그대로이며, AI는 해석만 덧붙입니다."
