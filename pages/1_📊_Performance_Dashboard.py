@@ -327,117 +327,118 @@ with tab_daily:
         "월별 데이터와 별도로 관리됩니다."
     )
 
-    if not os.path.exists(DAILY_DATA_PATH):
-        st.warning(f"⚠️ 일자별 데이터 파일이 없습니다: {os.path.basename(DAILY_DATA_PATH)}")
-        st.stop()
+    daily_df = st.session_state.get("daily_df")
+    if daily_df is None and os.path.exists(DAILY_DATA_PATH):
+        try:
+            daily_df = load_daily_data(DAILY_DATA_PATH)
+        except ValueError as e:
+            st.error(f"❌ 일자별 데이터 형식이 맞지 않습니다: {e}")
+            daily_df = None
 
-    try:
-        daily_df = load_daily_data(DAILY_DATA_PATH)
-    except ValueError as e:
-        st.error(f"❌ 일자별 데이터 형식이 맞지 않습니다: {e}")
-        st.stop()
-
-    daily_campaigns = sorted(daily_df["캠페인구분"].unique())
-    daily_dates = sorted(daily_df["일자"].unique())
-    daily_years = sorted({d.year for d in daily_dates})
-
-    def _daily_months_in_year(year: int) -> list[int]:
-        return sorted({d.month for d in daily_dates if d.year == year})
-
-    def _daily_days_in_month(year: int, month: int) -> list[int]:
-        return sorted({d.day for d in daily_dates if d.year == year and d.month == month})
-
-    d_col1, d_col2, d_col3 = st.columns([1.4, 1, 1])
-    with d_col1:
-        daily_selected = st.multiselect("캠페인구분", daily_campaigns, default=daily_campaigns, key="daily_campaigns")
-
-    with d_col2:
-        st.caption("시작일")
-        sy_col, sm_col, sd_col = st.columns(3)
-        d_start_year = sy_col.selectbox(
-            "연도", daily_years, index=0, key="daily_start_year", label_visibility="collapsed"
-        )
-        d_start_months = _daily_months_in_year(d_start_year)
-        d_start_month = sm_col.selectbox(
-            "월", d_start_months, index=0, key="daily_start_month",
-            format_func=lambda m: f"{m}월", label_visibility="collapsed",
-        )
-        d_start_days = _daily_days_in_month(d_start_year, d_start_month)
-        d_start_day = sd_col.selectbox(
-            "일", d_start_days, index=0, key="daily_start_day",
-            format_func=lambda d: f"{d}일", label_visibility="collapsed",
-        )
-
-    with d_col3:
-        st.caption("종료일")
-        ey_col, em_col, ed_col = st.columns(3)
-        d_end_year = ey_col.selectbox(
-            "연도", daily_years, index=len(daily_years) - 1, key="daily_end_year", label_visibility="collapsed"
-        )
-        d_end_months = _daily_months_in_year(d_end_year)
-        d_end_month = em_col.selectbox(
-            "월", d_end_months, index=len(d_end_months) - 1, key="daily_end_month",
-            format_func=lambda m: f"{m}월", label_visibility="collapsed",
-        )
-        d_end_days = _daily_days_in_month(d_end_year, d_end_month)
-        d_end_day = ed_col.selectbox(
-            "일", d_end_days, index=len(d_end_days) - 1, key="daily_end_day",
-            format_func=lambda d: f"{d}일", label_visibility="collapsed",
-        )
-
-    daily_start = date(d_start_year, d_start_month, d_start_day)
-    daily_end = date(d_end_year, d_end_month, d_end_day)
-
-    if daily_start > daily_end:
-        st.error("시작일이 종료일보다 늦을 수 없습니다. 기간을 다시 선택해주세요.")
-        st.stop()
-
-    daily_filtered = daily_df[
-        daily_df["캠페인구분"].isin(daily_selected) & daily_df["일자"].between(daily_start, daily_end)
-    ]
-
-    if not daily_selected or daily_filtered.empty:
-        st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+    if daily_df is None:
+        st.warning("⚠️ 일자별 데이터가 없습니다. 'Data upload' 페이지에서 일자별 데이터를 업로드해주세요.")
     else:
-        d_total_spend = daily_filtered["광고비"].sum()
-        d_total_db = daily_filtered["DB수"].sum()
-        d_avg_price = d_total_spend / d_total_db if d_total_db else float("nan")
+        daily_campaigns = sorted(daily_df["캠페인구분"].unique())
+        daily_dates = sorted(daily_df["일자"].unique())
+        daily_years = sorted({d.year for d in daily_dates})
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("기간 합계 광고비", f"{d_total_spend:,.0f}원")
-        m2.metric("기간 합계 DB수", f"{d_total_db:,.0f}건")
-        m3.metric("기간 평균 DB단가", f"{d_avg_price:,.0f}원")
+        def _daily_months_in_year(year: int) -> list[int]:
+            return sorted({d.month for d in daily_dates if d.year == year})
 
-        daily_sorted = daily_filtered.sort_values(["캠페인구분", "일자"])
-        left_col, right_col = st.columns(2)
-        with left_col:
-            daily_metric_left = st.selectbox(
-                "좌측 지표 선택", ["광고비", "DB수", "DB단가"], index=0, key="daily_metric_left"
-            )
-            fig_daily_left = px.line(
-                daily_sorted, x="일자", y=daily_metric_left, color="캠페인구분",
-                color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_left} 추이",
-            )
-            st.plotly_chart(fig_daily_left, width="stretch")
-        with right_col:
-            daily_metric_right = st.selectbox(
-                "우측 지표 선택", ["광고비", "DB수", "DB단가"], index=2, key="daily_metric_right"
-            )
-            fig_daily_right = px.line(
-                daily_sorted, x="일자", y=daily_metric_right, color="캠페인구분",
-                color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_right} 추이",
-            )
-            st.plotly_chart(fig_daily_right, width="stretch")
+        def _daily_days_in_month(year: int, month: int) -> list[int]:
+            return sorted({d.day for d in daily_dates if d.year == year and d.month == month})
 
-        with st.expander("일자별 원본 데이터 보기"):
-            daily_display = daily_filtered.copy()
-            daily_display["일자"] = daily_display["일자"].astype(str)
-            styled_daily = (
-                style_campaign_rows(daily_display)
-                .format({"광고비": "{:,.0f}", "DB수": "{:,.0f}", "DB단가": "{:,.0f}"})
-                .hide(axis="index")
+        d_col1, d_col2, d_col3 = st.columns([1.4, 1, 1])
+        with d_col1:
+            daily_selected = st.multiselect("캠페인구분", daily_campaigns, default=daily_campaigns, key="daily_campaigns")
+
+        with d_col2:
+            st.caption("시작일")
+            sy_col, sm_col, sd_col = st.columns(3)
+            d_start_year = sy_col.selectbox(
+                "연도", daily_years, index=0, key="daily_start_year", label_visibility="collapsed"
             )
-            st.dataframe(styled_daily, width="stretch", height=400)
+            d_start_months = _daily_months_in_year(d_start_year)
+            d_start_month = sm_col.selectbox(
+                "월", d_start_months, index=0, key="daily_start_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+            d_start_days = _daily_days_in_month(d_start_year, d_start_month)
+            d_start_day = sd_col.selectbox(
+                "일", d_start_days, index=0, key="daily_start_day",
+                format_func=lambda d: f"{d}일", label_visibility="collapsed",
+            )
+
+        with d_col3:
+            st.caption("종료일")
+            ey_col, em_col, ed_col = st.columns(3)
+            d_end_year = ey_col.selectbox(
+                "연도", daily_years, index=len(daily_years) - 1, key="daily_end_year", label_visibility="collapsed"
+            )
+            d_end_months = _daily_months_in_year(d_end_year)
+            d_end_month = em_col.selectbox(
+                "월", d_end_months, index=len(d_end_months) - 1, key="daily_end_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+            d_end_days = _daily_days_in_month(d_end_year, d_end_month)
+            d_end_day = ed_col.selectbox(
+                "일", d_end_days, index=len(d_end_days) - 1, key="daily_end_day",
+                format_func=lambda d: f"{d}일", label_visibility="collapsed",
+            )
+
+        daily_start = date(d_start_year, d_start_month, d_start_day)
+        daily_end = date(d_end_year, d_end_month, d_end_day)
+
+        if daily_start > daily_end:
+            st.error("시작일이 종료일보다 늦을 수 없습니다. 기간을 다시 선택해주세요.")
+            st.stop()
+
+        daily_filtered = daily_df[
+            daily_df["캠페인구분"].isin(daily_selected) & daily_df["일자"].between(daily_start, daily_end)
+        ]
+
+        if not daily_selected or daily_filtered.empty:
+            st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+        else:
+            d_total_spend = daily_filtered["광고비"].sum()
+            d_total_db = daily_filtered["DB수"].sum()
+            d_avg_price = d_total_spend / d_total_db if d_total_db else float("nan")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("기간 합계 광고비", f"{d_total_spend:,.0f}원")
+            m2.metric("기간 합계 DB수", f"{d_total_db:,.0f}건")
+            m3.metric("기간 평균 DB단가", f"{d_avg_price:,.0f}원")
+
+            daily_sorted = daily_filtered.sort_values(["캠페인구분", "일자"])
+            left_col, right_col = st.columns(2)
+            with left_col:
+                daily_metric_left = st.selectbox(
+                    "좌측 지표 선택", ["광고비", "DB수", "DB단가"], index=0, key="daily_metric_left"
+                )
+                fig_daily_left = px.line(
+                    daily_sorted, x="일자", y=daily_metric_left, color="캠페인구분",
+                    color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_left} 추이",
+                )
+                st.plotly_chart(fig_daily_left, width="stretch")
+            with right_col:
+                daily_metric_right = st.selectbox(
+                    "우측 지표 선택", ["광고비", "DB수", "DB단가"], index=2, key="daily_metric_right"
+                )
+                fig_daily_right = px.line(
+                    daily_sorted, x="일자", y=daily_metric_right, color="캠페인구분",
+                    color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_right} 추이",
+                )
+                st.plotly_chart(fig_daily_right, width="stretch")
+
+            with st.expander("일자별 원본 데이터 보기"):
+                daily_display = daily_filtered.copy()
+                daily_display["일자"] = daily_display["일자"].astype(str)
+                styled_daily = (
+                    style_campaign_rows(daily_display)
+                    .format({"광고비": "{:,.0f}", "DB수": "{:,.0f}", "DB단가": "{:,.0f}"})
+                    .hide(axis="index")
+                )
+                st.dataframe(styled_daily, width="stretch", height=400)
 
 with tab_media:
     st.caption(
@@ -445,105 +446,106 @@ with tab_media:
         "월별 데이터와 별도로 관리됩니다."
     )
 
-    if not os.path.exists(MEDIA_DATA_PATH):
-        st.warning(f"⚠️ 매체별 데이터 파일이 없습니다: {os.path.basename(MEDIA_DATA_PATH)}")
-        st.stop()
+    media_df = st.session_state.get("media_df")
+    if media_df is None and os.path.exists(MEDIA_DATA_PATH):
+        try:
+            media_df = load_media_data(MEDIA_DATA_PATH)
+        except ValueError as e:
+            st.error(f"❌ 매체별 데이터 형식이 맞지 않습니다: {e}")
+            media_df = None
 
-    try:
-        media_df = load_media_data(MEDIA_DATA_PATH)
-    except ValueError as e:
-        st.error(f"❌ 매체별 데이터 형식이 맞지 않습니다: {e}")
-        st.stop()
-
-    media_campaigns = sorted(media_df["캠페인구분"].unique())
-    media_months = sorted(media_df["월"].unique())
-    media_years = sorted({int(m[:4]) for m in media_months})
-
-    def _media_months_in_year(year: int) -> list[int]:
-        return sorted(int(m[5:7]) for m in media_months if int(m[:4]) == year)
-
-    mf_col1, mf_col2, mf_col3 = st.columns([1.4, 1, 1])
-    with mf_col1:
-        media_selected_campaigns = st.multiselect(
-            "캠페인구분", media_campaigns, default=media_campaigns, key="media_campaigns"
-        )
-
-    with mf_col2:
-        st.caption("시작월")
-        msy_col, msm_col = st.columns(2)
-        media_start_year = msy_col.selectbox(
-            "연도", media_years, index=0, key="media_start_year", label_visibility="collapsed"
-        )
-        media_start_month = msm_col.selectbox(
-            "월", _media_months_in_year(media_start_year), index=0, key="media_start_month",
-            format_func=lambda m: f"{m}월", label_visibility="collapsed",
-        )
-
-    with mf_col3:
-        st.caption("종료월")
-        mey_col, mem_col = st.columns(2)
-        media_end_year = mey_col.selectbox(
-            "연도", media_years, index=len(media_years) - 1, key="media_end_year", label_visibility="collapsed"
-        )
-        media_end_months = _media_months_in_year(media_end_year)
-        media_end_month = mem_col.selectbox(
-            "월", media_end_months, index=len(media_end_months) - 1, key="media_end_month",
-            format_func=lambda m: f"{m}월", label_visibility="collapsed",
-        )
-
-    media_start = f"{media_start_year:04d}-{media_start_month:02d}"
-    media_end = f"{media_end_year:04d}-{media_end_month:02d}"
-
-    if media_start > media_end:
-        st.error("시작월이 종료월보다 늦을 수 없습니다. 기간을 다시 선택해주세요.")
-        st.stop()
-
-    media_period_filtered = media_df[
-        media_df["캠페인구분"].isin(media_selected_campaigns) & media_df["월"].between(media_start, media_end)
-    ].dropna(subset=["광고비"])
-
-    if not media_selected_campaigns or media_period_filtered.empty:
-        st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+    if media_df is None:
+        st.warning("⚠️ 매체별 데이터가 없습니다. 'Data upload' 페이지에서 매체별 데이터를 업로드해주세요.")
     else:
-        media_options = sorted(media_period_filtered["매체"].unique())
-        media_selected = st.multiselect("매체", media_options, default=media_options, key="media_selected")
-        media_filtered = media_period_filtered[media_period_filtered["매체"].isin(media_selected)]
+        media_campaigns = sorted(media_df["캠페인구분"].unique())
+        media_months = sorted(media_df["월"].unique())
+        media_years = sorted({int(m[:4]) for m in media_months})
 
-        if not media_selected or media_filtered.empty:
+        def _media_months_in_year(year: int) -> list[int]:
+            return sorted(int(m[5:7]) for m in media_months if int(m[:4]) == year)
+
+        mf_col1, mf_col2, mf_col3 = st.columns([1.4, 1, 1])
+        with mf_col1:
+            media_selected_campaigns = st.multiselect(
+                "캠페인구분", media_campaigns, default=media_campaigns, key="media_campaigns"
+            )
+
+        with mf_col2:
+            st.caption("시작월")
+            msy_col, msm_col = st.columns(2)
+            media_start_year = msy_col.selectbox(
+                "연도", media_years, index=0, key="media_start_year", label_visibility="collapsed"
+            )
+            media_start_month = msm_col.selectbox(
+                "월", _media_months_in_year(media_start_year), index=0, key="media_start_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+
+        with mf_col3:
+            st.caption("종료월")
+            mey_col, mem_col = st.columns(2)
+            media_end_year = mey_col.selectbox(
+                "연도", media_years, index=len(media_years) - 1, key="media_end_year", label_visibility="collapsed"
+            )
+            media_end_months = _media_months_in_year(media_end_year)
+            media_end_month = mem_col.selectbox(
+                "월", media_end_months, index=len(media_end_months) - 1, key="media_end_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+
+        media_start = f"{media_start_year:04d}-{media_start_month:02d}"
+        media_end = f"{media_end_year:04d}-{media_end_month:02d}"
+
+        if media_start > media_end:
+            st.error("시작월이 종료월보다 늦을 수 없습니다. 기간을 다시 선택해주세요.")
+            st.stop()
+
+        media_period_filtered = media_df[
+            media_df["캠페인구분"].isin(media_selected_campaigns) & media_df["월"].between(media_start, media_end)
+        ].dropna(subset=["광고비"])
+
+        if not media_selected_campaigns or media_period_filtered.empty:
             st.info("선택한 조건에 해당하는 데이터가 없습니다.")
         else:
-            media_agg = media_filtered.groupby("매체", as_index=False).agg(
-                광고비=("광고비", "sum"), DB수=("DB수", "sum"), 입회수=("입회수", "sum")
-            )
-            media_agg["DB단가"] = media_agg["광고비"] / media_agg["DB수"].replace(0, pd.NA)
-            media_agg["입회율"] = media_agg["입회수"] / media_agg["DB수"].replace(0, pd.NA)
-            media_agg = media_agg.sort_values("광고비", ascending=False).reset_index(drop=True)
+            media_options = sorted(media_period_filtered["매체"].unique())
+            media_selected = st.multiselect("매체", media_options, default=media_options, key="media_selected")
+            media_filtered = media_period_filtered[media_period_filtered["매체"].isin(media_selected)]
 
-            bar_col1, bar_col2 = st.columns(2)
-            with bar_col1:
-                fig_spend = px.bar(media_agg, x="매체", y="광고비", title="매체별 광고비", text_auto=".2s")
-                st.plotly_chart(fig_spend, width="stretch")
-            with bar_col2:
-                fig_price = px.bar(
-                    media_agg.sort_values("DB단가"), x="매체", y="DB단가",
-                    title="매체별 DB단가 (낮을수록 효율적)", text_auto=".0f",
+            if not media_selected or media_filtered.empty:
+                st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+            else:
+                media_agg = media_filtered.groupby("매체", as_index=False).agg(
+                    광고비=("광고비", "sum"), DB수=("DB수", "sum"), 입회수=("입회수", "sum")
                 )
-                st.plotly_chart(fig_price, width="stretch")
+                media_agg["DB단가"] = media_agg["광고비"] / media_agg["DB수"].replace(0, pd.NA)
+                media_agg["입회율"] = media_agg["입회수"] / media_agg["DB수"].replace(0, pd.NA)
+                media_agg = media_agg.sort_values("광고비", ascending=False).reset_index(drop=True)
 
-            st.markdown("**매체별 월별 광고비 추이**")
-            trend_agg = media_filtered.groupby(["월", "매체"], as_index=False)["광고비"].sum()
-            fig_trend_media = px.line(
-                trend_agg, x="월", y="광고비", color="매체", markers=True, title="매체별 월별 광고비 추이"
-            )
-            st.plotly_chart(fig_trend_media, width="stretch")
+                bar_col1, bar_col2 = st.columns(2)
+                with bar_col1:
+                    fig_spend = px.bar(media_agg, x="매체", y="광고비", title="매체별 광고비", text_auto=".2s")
+                    st.plotly_chart(fig_spend, width="stretch")
+                with bar_col2:
+                    fig_price = px.bar(
+                        media_agg.sort_values("DB단가"), x="매체", y="DB단가",
+                        title="매체별 DB단가 (낮을수록 효율적)", text_auto=".0f",
+                    )
+                    st.plotly_chart(fig_price, width="stretch")
 
-            st.markdown("**매체별 집계 표**")
-            styled_media = (
-                media_agg.style
-                .format(
-                    {"광고비": "{:,.0f}", "DB수": "{:,.0f}", "입회수": "{:,.0f}", "DB단가": "{:,.0f}", "입회율": "{:.1%}"},
-                    na_rep="-",
+                st.markdown("**매체별 월별 광고비 추이**")
+                trend_agg = media_filtered.groupby(["월", "매체"], as_index=False)["광고비"].sum()
+                fig_trend_media = px.line(
+                    trend_agg, x="월", y="광고비", color="매체", markers=True, title="매체별 월별 광고비 추이"
                 )
-                .hide(axis="index")
-            )
-            st.dataframe(styled_media, width="stretch")
+                st.plotly_chart(fig_trend_media, width="stretch")
+
+                st.markdown("**매체별 집계 표**")
+                styled_media = (
+                    media_agg.style
+                    .format(
+                        {"광고비": "{:,.0f}", "DB수": "{:,.0f}", "입회수": "{:,.0f}", "DB단가": "{:,.0f}", "입회율": "{:.1%}"},
+                        na_rep="-",
+                    )
+                    .hide(axis="index")
+                )
+                st.dataframe(styled_media, width="stretch")
