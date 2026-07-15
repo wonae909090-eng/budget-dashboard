@@ -416,6 +416,8 @@ with tab_daily:
             period_span_days = (daily_end - daily_start).days
             show_spike_labels = period_span_days <= SPIKE_LABEL_MAX_SPAN_DAYS
 
+            MAN_WON_METRICS = ("광고비", "DB단가")  # 원 단위 지표는 M/K 대신 만원 단위로 표기
+
             def _daily_campaign_average(metric: str, camp_df: pd.DataFrame) -> float:
                 if metric == "DB단가":
                     total_spend = camp_df["광고비"].sum()
@@ -423,11 +425,26 @@ with tab_daily:
                     return total_spend / total_db if total_db else float("nan")
                 return camp_df[metric].mean()
 
+            def _format_value(metric: str, raw_value: float) -> str:
+                if metric in MAN_WON_METRICS:
+                    return f"{raw_value / 10_000:,.1f}만원"
+                return f"{raw_value:,.0f}건"
+
             def _render_daily_metric_chart(metric: str, key: str) -> None:
+                use_man_won = metric in MAN_WON_METRICS
+                plot_source = daily_sorted.copy()
+                y_col = metric
+                if use_man_won:
+                    y_col = f"{metric}(만원)"
+                    plot_source[y_col] = plot_source[metric] / 10_000
+
                 fig = px.line(
-                    daily_sorted, x="일자", y=metric, color="캠페인구분",
+                    plot_source, x="일자", y=y_col, color="캠페인구분",
                     color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {metric} 추이",
+                    labels={y_col: f"{metric} (만원)" if use_man_won else metric},
                 )
+                fig.update_yaxes(tickformat=",.1f" if use_man_won else ",.0f")
+
                 for campaign in daily_selected:
                     camp_df = daily_sorted[daily_sorted["캠페인구분"] == campaign]
                     if camp_df.empty:
@@ -436,18 +453,21 @@ with tab_daily:
                     avg_value = _daily_campaign_average(metric, camp_df)
                     if not avg_value or pd.isna(avg_value):
                         continue
+                    avg_plot = avg_value / 10_000 if use_man_won else avg_value
 
                     fig.add_hline(
-                        y=avg_value, line_dash="dash", line_color=color, opacity=0.6,
-                        annotation_text=f"{campaign} 평균 {avg_value:,.0f}",
+                        y=avg_plot, line_dash="dash", line_color=color, opacity=0.6,
+                        annotation_text=f"{campaign} 평균 {_format_value(metric, avg_value)}",
                         annotation_font_color=color, annotation_position="top left",
                     )
 
                     if show_spike_labels:
                         spikes = camp_df[(camp_df[metric] - avg_value).abs() / avg_value > SPIKE_THRESHOLD]
                         for _, row in spikes.iterrows():
+                            raw_value = row[metric]
+                            plot_value = raw_value / 10_000 if use_man_won else raw_value
                             fig.add_annotation(
-                                x=row["일자"], y=row[metric], text=f"{row[metric]:,.0f}",
+                                x=row["일자"], y=plot_value, text=_format_value(metric, raw_value),
                                 showarrow=True, arrowhead=1, arrowsize=0.8, ax=0, ay=-25,
                                 font=dict(size=10, color=color),
                             )
