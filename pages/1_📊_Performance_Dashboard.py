@@ -411,6 +411,10 @@ with tab_daily:
 
             daily_sorted = daily_filtered.sort_values(["캠페인구분", "일자"])
             SPIKE_THRESHOLD = 0.25  # 캠페인별 평균 대비 ±25% 이상 벗어나면 "튀는 날짜"로 표기
+            SPIKE_LABEL_MAX_SPAN_DAYS = 31  # 조회 기간이 한 달 이내일 때만 값 표기(길면 너무 복잡해짐)
+
+            period_span_days = (daily_end - daily_start).days
+            show_spike_labels = period_span_days <= SPIKE_LABEL_MAX_SPAN_DAYS
 
             def _daily_campaign_average(metric: str, camp_df: pd.DataFrame) -> float:
                 if metric == "DB단가":
@@ -439,13 +443,14 @@ with tab_daily:
                         annotation_font_color=color, annotation_position="top left",
                     )
 
-                    spikes = camp_df[(camp_df[metric] - avg_value).abs() / avg_value > SPIKE_THRESHOLD]
-                    for _, row in spikes.iterrows():
-                        fig.add_annotation(
-                            x=row["일자"], y=row[metric], text=f"{row[metric]:,.0f}",
-                            showarrow=True, arrowhead=1, arrowsize=0.8, ax=0, ay=-25,
-                            font=dict(size=10, color=color),
-                        )
+                    if show_spike_labels:
+                        spikes = camp_df[(camp_df[metric] - avg_value).abs() / avg_value > SPIKE_THRESHOLD]
+                        for _, row in spikes.iterrows():
+                            fig.add_annotation(
+                                x=row["일자"], y=row[metric], text=f"{row[metric]:,.0f}",
+                                showarrow=True, arrowhead=1, arrowsize=0.8, ax=0, ay=-25,
+                                font=dict(size=10, color=color),
+                            )
 
                 st.plotly_chart(fig, width="stretch", key=key)
 
@@ -459,8 +464,13 @@ with tab_daily:
             )
             _render_daily_metric_chart(daily_metric_bottom, key="daily_chart_bottom")
 
+            spike_caption = (
+                f"{SPIKE_THRESHOLD*100:.0f}%↑↓ 벗어난 날짜에는 실제값 표기"
+                if show_spike_labels
+                else "조회 기간이 한 달을 넘어 값 표기는 생략됨(기간을 한 달 이내로 좁히면 표시됩니다)"
+            )
             st.caption(
-                f"점선 = 캠페인별 평균({SPIKE_THRESHOLD*100:.0f}%↑↓ 벗어난 날짜에는 실제값 표기). "
+                f"점선 = 캠페인별 평균({spike_caption}). "
                 "DB단가 평균은 (해당 기간 광고비 합계 ÷ 해당 기간 DB수 합계)로 계산한 가중평균입니다."
             )
 
