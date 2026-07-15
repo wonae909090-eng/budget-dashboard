@@ -410,25 +410,59 @@ with tab_daily:
             m3.metric("기간 평균 DB단가", f"{d_avg_price:,.0f}원")
 
             daily_sorted = daily_filtered.sort_values(["캠페인구분", "일자"])
-            left_col, right_col = st.columns(2)
-            with left_col:
-                daily_metric_left = st.selectbox(
-                    "좌측 지표 선택", ["광고비", "DB수", "DB단가"], index=0, key="daily_metric_left"
+            SPIKE_THRESHOLD = 0.25  # 캠페인별 평균 대비 ±25% 이상 벗어나면 "튀는 날짜"로 표기
+
+            def _daily_campaign_average(metric: str, camp_df: pd.DataFrame) -> float:
+                if metric == "DB단가":
+                    total_spend = camp_df["광고비"].sum()
+                    total_db = camp_df["DB수"].sum()
+                    return total_spend / total_db if total_db else float("nan")
+                return camp_df[metric].mean()
+
+            def _render_daily_metric_chart(metric: str, key: str) -> None:
+                fig = px.line(
+                    daily_sorted, x="일자", y=metric, color="캠페인구분",
+                    color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {metric} 추이",
                 )
-                fig_daily_left = px.line(
-                    daily_sorted, x="일자", y=daily_metric_left, color="캠페인구분",
-                    color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_left} 추이",
-                )
-                st.plotly_chart(fig_daily_left, width="stretch")
-            with right_col:
-                daily_metric_right = st.selectbox(
-                    "우측 지표 선택", ["광고비", "DB수", "DB단가"], index=2, key="daily_metric_right"
-                )
-                fig_daily_right = px.line(
-                    daily_sorted, x="일자", y=daily_metric_right, color="캠페인구분",
-                    color_discrete_map=CAMPAIGN_COLORS, title=f"일자별 {daily_metric_right} 추이",
-                )
-                st.plotly_chart(fig_daily_right, width="stretch")
+                for campaign in daily_selected:
+                    camp_df = daily_sorted[daily_sorted["캠페인구분"] == campaign]
+                    if camp_df.empty:
+                        continue
+                    color = CAMPAIGN_COLORS.get(campaign, "#666666")
+                    avg_value = _daily_campaign_average(metric, camp_df)
+                    if not avg_value or pd.isna(avg_value):
+                        continue
+
+                    fig.add_hline(
+                        y=avg_value, line_dash="dash", line_color=color, opacity=0.6,
+                        annotation_text=f"{campaign} 평균 {avg_value:,.0f}",
+                        annotation_font_color=color, annotation_position="top left",
+                    )
+
+                    spikes = camp_df[(camp_df[metric] - avg_value).abs() / avg_value > SPIKE_THRESHOLD]
+                    for _, row in spikes.iterrows():
+                        fig.add_annotation(
+                            x=row["일자"], y=row[metric], text=f"{row[metric]:,.0f}",
+                            showarrow=True, arrowhead=1, arrowsize=0.8, ax=0, ay=-25,
+                            font=dict(size=10, color=color),
+                        )
+
+                st.plotly_chart(fig, width="stretch", key=key)
+
+            daily_metric_top = st.selectbox(
+                "위쪽 지표 선택", ["광고비", "DB수", "DB단가"], index=0, key="daily_metric_left"
+            )
+            _render_daily_metric_chart(daily_metric_top, key="daily_chart_top")
+
+            daily_metric_bottom = st.selectbox(
+                "아래쪽 지표 선택", ["광고비", "DB수", "DB단가"], index=2, key="daily_metric_right"
+            )
+            _render_daily_metric_chart(daily_metric_bottom, key="daily_chart_bottom")
+
+            st.caption(
+                f"점선 = 캠페인별 평균({SPIKE_THRESHOLD*100:.0f}%↑↓ 벗어난 날짜에는 실제값 표기). "
+                "DB단가 평균은 (해당 기간 광고비 합계 ÷ 해당 기간 DB수 합계)로 계산한 가중평균입니다."
+            )
 
             with st.expander("일자별 원본 데이터 보기"):
                 daily_display = daily_filtered.copy()
