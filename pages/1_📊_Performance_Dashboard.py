@@ -585,22 +585,35 @@ with tab_media:
                 media_agg["입회율"] = media_agg["입회수"] / media_agg["DB수"].replace(0, pd.NA)
                 media_agg = media_agg.sort_values("광고비", ascending=False).reset_index(drop=True)
 
+                media_agg_plot = media_agg.copy()
+                media_agg_plot["광고비(만원)"] = media_agg_plot["광고비"] / 10_000
+                media_agg_plot["DB단가(만원)"] = media_agg_plot["DB단가"] / 10_000
+
                 bar_col1, bar_col2 = st.columns(2)
                 with bar_col1:
-                    fig_spend = px.bar(media_agg, x="매체", y="광고비", title="매체별 광고비", text_auto=".2s")
+                    fig_spend = px.bar(
+                        media_agg_plot, x="매체", y="광고비(만원)", title="매체별 광고비 (만원)",
+                        text_auto=",.1f", labels={"광고비(만원)": "광고비 (만원)"},
+                    )
+                    fig_spend.update_yaxes(tickformat=",.1f")
                     st.plotly_chart(fig_spend, width="stretch")
                 with bar_col2:
                     fig_price = px.bar(
-                        media_agg.sort_values("DB단가"), x="매체", y="DB단가",
-                        title="매체별 DB단가 (낮을수록 효율적)", text_auto=".0f",
+                        media_agg_plot.sort_values("DB단가"), x="매체", y="DB단가(만원)",
+                        title="매체별 DB단가 (만원, 낮을수록 효율적)", text_auto=",.1f",
+                        labels={"DB단가(만원)": "DB단가 (만원)"},
                     )
+                    fig_price.update_yaxes(tickformat=",.1f")
                     st.plotly_chart(fig_price, width="stretch")
 
                 st.markdown("**매체별 월별 광고비 추이**")
                 trend_agg = media_filtered.groupby(["월", "매체"], as_index=False)["광고비"].sum()
+                trend_agg["광고비(만원)"] = trend_agg["광고비"] / 10_000
                 fig_trend_media = px.line(
-                    trend_agg, x="월", y="광고비", color="매체", markers=True, title="매체별 월별 광고비 추이"
+                    trend_agg, x="월", y="광고비(만원)", color="매체", markers=True,
+                    title="매체별 월별 광고비 추이 (만원)", labels={"광고비(만원)": "광고비 (만원)"},
                 )
+                fig_trend_media.update_yaxes(tickformat=",.1f")
                 st.plotly_chart(fig_trend_media, width="stretch")
 
                 st.markdown("**매체별 집계 표**")
@@ -613,3 +626,104 @@ with tab_media:
                     .hide(axis="index")
                 )
                 st.dataframe(styled_media, width="stretch")
+
+        st.divider()
+        st.subheader("캠페인별 비교")
+        st.caption("캠페인과 기간을 선택하고, 매체는 최대 2개까지 골라 캠페인 간 성과를 비교합니다.")
+
+        cmp_col1, cmp_col2, cmp_col3 = st.columns([1.4, 1, 1])
+        with cmp_col1:
+            cmp_campaigns = st.multiselect(
+                "캠페인구분", media_campaigns, default=media_campaigns, key="media_cmp_campaigns"
+            )
+        with cmp_col2:
+            st.caption("시작월")
+            cmp_sy_col, cmp_sm_col = st.columns(2)
+            cmp_start_year = cmp_sy_col.selectbox(
+                "연도", media_years, index=0, key="media_cmp_start_year", label_visibility="collapsed"
+            )
+            cmp_start_month = cmp_sm_col.selectbox(
+                "월", _media_months_in_year(cmp_start_year), index=0, key="media_cmp_start_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+        with cmp_col3:
+            st.caption("종료월")
+            cmp_ey_col, cmp_em_col = st.columns(2)
+            cmp_end_year = cmp_ey_col.selectbox(
+                "연도", media_years, index=len(media_years) - 1, key="media_cmp_end_year", label_visibility="collapsed"
+            )
+            cmp_end_months = _media_months_in_year(cmp_end_year)
+            cmp_end_month = cmp_em_col.selectbox(
+                "월", cmp_end_months, index=len(cmp_end_months) - 1, key="media_cmp_end_month",
+                format_func=lambda m: f"{m}월", label_visibility="collapsed",
+            )
+
+        cmp_start = f"{cmp_start_year:04d}-{cmp_start_month:02d}"
+        cmp_end = f"{cmp_end_year:04d}-{cmp_end_month:02d}"
+
+        if cmp_start > cmp_end:
+            st.error("시작월이 종료월보다 늦을 수 없습니다. 기간을 다시 선택해주세요.")
+        else:
+            cmp_period_filtered = media_df[
+                media_df["캠페인구분"].isin(cmp_campaigns) & media_df["월"].between(cmp_start, cmp_end)
+            ].dropna(subset=["광고비"])
+
+            if not cmp_campaigns or cmp_period_filtered.empty:
+                st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+            else:
+                cmp_media_options = sorted(cmp_period_filtered["매체"].unique())
+                cmp_media_selected = st.multiselect(
+                    "매체 (최대 2개)", cmp_media_options, default=cmp_media_options[:2],
+                    max_selections=2, key="media_cmp_media",
+                )
+                cmp_filtered = cmp_period_filtered[cmp_period_filtered["매체"].isin(cmp_media_selected)].copy()
+
+                if not cmp_media_selected or cmp_filtered.empty:
+                    st.info("매체를 1개 이상 선택해주세요.")
+                else:
+                    cmp_metric = st.selectbox(
+                        "비교 지표", ["광고비", "DB수", "DB단가", "입회수", "입회단가", "입회율"],
+                        index=0, key="media_cmp_metric",
+                    )
+
+                    cmp_filtered["캠페인_매체"] = cmp_filtered["캠페인구분"] + " · " + cmp_filtered["매체"]
+                    cmp_use_man_won = cmp_metric in ("광고비", "DB단가", "입회단가")
+                    cmp_y_col = cmp_metric
+                    cmp_y_label = cmp_metric
+                    if cmp_use_man_won:
+                        cmp_y_col = f"{cmp_metric}(만원)"
+                        cmp_filtered[cmp_y_col] = cmp_filtered[cmp_metric] / 10_000
+                        cmp_y_label = f"{cmp_metric} (만원)"
+                    elif cmp_metric == "입회율":
+                        cmp_y_col = "입회율(%)"
+                        cmp_filtered[cmp_y_col] = cmp_filtered["입회율"] * 100
+                        cmp_y_label = "입회율(%)"
+
+                    fig_cmp = px.line(
+                        cmp_filtered.sort_values("월"), x="월", y=cmp_y_col, color="캠페인_매체", markers=True,
+                        title=f"캠페인 × 매체별 {cmp_metric} 추이", labels={cmp_y_col: cmp_y_label},
+                    )
+                    if cmp_use_man_won or cmp_metric == "입회율":
+                        fig_cmp.update_yaxes(tickformat=",.1f")
+                    st.plotly_chart(fig_cmp, width="stretch")
+
+                    cmp_summary = cmp_filtered.groupby(["캠페인구분", "매체"], as_index=False).agg(
+                        광고비=("광고비", "sum"), DB수=("DB수", "sum"), 입회수=("입회수", "sum")
+                    )
+                    cmp_summary["DB단가"] = cmp_summary["광고비"] / cmp_summary["DB수"].replace(0, pd.NA)
+                    cmp_summary["입회단가"] = cmp_summary["광고비"] / cmp_summary["입회수"].replace(0, pd.NA)
+                    cmp_summary["입회율"] = cmp_summary["입회수"] / cmp_summary["DB수"].replace(0, pd.NA)
+
+                    st.markdown("**캠페인 × 매체별 집계 표**")
+                    styled_cmp = (
+                        style_campaign_rows(cmp_summary)
+                        .format(
+                            {
+                                "광고비": "{:,.0f}", "DB수": "{:,.0f}", "입회수": "{:,.0f}",
+                                "DB단가": "{:,.0f}", "입회단가": "{:,.0f}", "입회율": "{:.1%}",
+                            },
+                            na_rep="-",
+                        )
+                        .hide(axis="index")
+                    )
+                    st.dataframe(styled_cmp, width="stretch")
