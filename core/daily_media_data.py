@@ -98,6 +98,45 @@ def build_paid_monthly(media_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# DA(디스플레이) 채널: 경매/노출 구조상 예산을 늘릴수록 단가가 더 가파르게 상승하는 경향이 있어
+# 전체 광고비만으로는 못 잡는 이 효과를 회귀에 별도 변수로 반영할 때 쓴다.
+# 담당자가 지정한 효율판단 핵심 채널과 동일하다(EFFICIENCY_KEY_CHANNELS 참고).
+DA_CHANNELS = EFFICIENCY_KEY_CHANNELS = {
+    "키즈": ["메타", "네이버GFA"],
+    "초등": ["메타"],
+    "중학": ["메타", "GDN"],
+}
+
+
+def build_paid_monthly_with_da(media_df: pd.DataFrame) -> pd.DataFrame:
+    """유료 확장형 매체를 캠페인×월로 합산하되, DA 채널(DA_CHANNELS) 지출을 별도 컬럼(DA광고비)으로 함께 반환.
+
+    캠페인×월 단위로 광고비, DB수, DA광고비(DA_CHANNELS에 해당하는 매체만 합산) 컬럼을 갖는다.
+    DA 채널이 정의 안 된 캠페인이거나 데이터가 없으면 DA광고비=0으로 채워진다.
+    """
+    total = build_paid_monthly(media_df)
+
+    da_rows = []
+    for campaign, channels in DA_CHANNELS.items():
+        sub = media_df[
+            (media_df["캠페인구분"] == campaign) & (media_df["매체"].isin(channels))
+        ].dropna(subset=["광고비"])
+        if sub.empty:
+            continue
+        agg = sub.groupby("월", as_index=False).agg(DA광고비=("광고비", "sum"))
+        agg["캠페인구분"] = campaign
+        da_rows.append(agg)
+
+    if da_rows:
+        da_df = pd.concat(da_rows, ignore_index=True)
+    else:
+        da_df = pd.DataFrame(columns=["캠페인구분", "월", "DA광고비"])
+
+    merged = total.merge(da_df, on=["캠페인구분", "월"], how="left")
+    merged["DA광고비"] = merged["DA광고비"].fillna(0.0)
+    return merged.sort_values(["캠페인구분", "월"]).reset_index(drop=True)
+
+
 def build_organic_monthly(media_df: pd.DataFrame) -> pd.DataFrame:
     """자연유입/브랜드 채널만 캠페인×월로 합산 (DB수). 광고비 대비 반응이 아니라 추세 예측용."""
     organic = media_df[media_df["매체"].isin(ORGANIC_MEDIA)]
@@ -107,15 +146,6 @@ def build_organic_monthly(media_df: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["캠페인구분", "월"])
         .reset_index(drop=True)
     )
-
-
-# 캠페인별로 "효율이 좋았던 달"을 판단할 때 기준으로 삼는 핵심 채널.
-# 담당자 판단 기준 — 캠페인 전체 매체 믹스가 아니라 이 채널들의 실적으로 효율 우수월을 가른다.
-EFFICIENCY_KEY_CHANNELS = {
-    "키즈": ["메타", "네이버GFA"],
-    "초등": ["메타"],
-    "중학": ["메타", "GDN"],
-}
 
 
 def build_key_channel_monthly(media_df: pd.DataFrame, campaign: str) -> pd.DataFrame | None:

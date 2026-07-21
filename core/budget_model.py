@@ -16,8 +16,22 @@ from core.daily_media_data import EFFICIENCY_KEY_CHANNELS, build_key_channel_mon
 PEAK_MONTHS = {1, 2, 7, 8}  # 캠페인별 실제 패턴을 감지할 수 없을 때만 쓰는 대체값(fallback)
 RIDGE_ALPHA = 1.0
 DEGREE2_IMPROVEMENT_THRESHOLD = 0.95  # 2차 모델의 LOOCV MAE가 1차보다 5% 이상 개선돼야 채택
+DA_IMPROVEMENT_THRESHOLD = 0.95  # DA광고비 변수 추가 시 LOOCV MAE가 5% 이상 개선돼야 채택
+DA_SHARE_LOOKBACK_MONTHS = 6  # 예측 시 가정할 DA 예산 비중 계산에 쓰는 최근 개월 수
 MIN_CALENDAR_MONTHS_FOR_SEASONALITY = 4  # 이보다 캘린더월 종류가 적으면 자동감지를 못 하고 fallback
 LOW_SPEND_EXCLUDE_RATIO = 0.5  # 평균 대비 이 비율 미만으로 쓴 달은 "저예산이라 단가가 낮아 보이는 착시"로 보고 제외
+RECENCY_HALF_LIFE_MONTHS = 12.0  # 이만큼 지난 달의 데이터는 가중치가 절반이 되는 재현성(최근 트렌드 반영) 감쇠 주기
+
+
+def _recency_weights(월_series: pd.Series, half_life: float = RECENCY_HALF_LIFE_MONTHS) -> np.ndarray:
+    """최근 달일수록 더 큰 가중치를 주는 지수감쇠 가중치.
+
+    표본 전체(예: 30개월)를 그대로 학습에 쓰되, 오래된 달의 영향력을 줄여서 최근 트렌드
+    변화에 더 민감하게 반응하도록 한다. half_life개월 전 데이터의 가중치는 절반이 된다.
+    """
+    month_index = 월_series.apply(_month_to_index).to_numpy(dtype=float)
+    months_ago = month_index.max() - month_index
+    return 0.5 ** (months_ago / half_life)
 
 
 def detect_peak_months(camp_df: pd.DataFrame, top_n: int = 4, metric: str = "광고비") -> set[int]:
@@ -79,23 +93,31 @@ def _is_peak(월_series: pd.Series, peak_months: set[int] | None = None) -> np.n
     return month_num.isin(peak_months).astype(float).to_numpy()
 
 
-def _design_matrix(ad_spend: np.ndarray, is_peak: np.ndarray, degree: int) -> np.ndarray:
+def _design_matrix(
+    ad_spend: np.ndarray, is_peak: np.ndarray, degree: int, da_spend: np.ndarray | None = None,
+) -> np.ndarray:
     cols = [ad_spend]
     if degree >= 2:
         cols.append(ad_spend ** 2)
+    if da_spend is not None:
+        cols.append(da_spend)
     cols.append(is_peak)
     return np.column_stack(cols)
 
 
-def _fit_degree(ad_spend: np.ndarray, is_peak: np.ndarray, y: np.ndarray, degree: int) -> dict:
-    X = _design_matrix(ad_spend, is_peak, degree)
+def _fit_degree(
+    ad_spend: np.ndarray, is_peak: np.ndarray, y: np.ndarray, degree: int,
+    sample_weight: np.ndarray | None = None, da_spend: np.ndarray | None = None,
+) -> dict:
+    X = _design_matrix(ad_spend, is_peak, degree, da_spend=da_spend)
     pipeline = make_pipeline(StandardScaler(), Ridge(alpha=RIDGE_ALPHA))
 
-    loo_preds = cross_val_predict(pipeline, X, y, cv=LeaveOneOut())
+    fit_kwargs = {"ridge__sample_weight": sample_weight} if sample_weight is not None else {}
+    loo_preds = cross_val_predict(pipeline, X, y, cv=LeaveOneOut(), params=fit_kwargs)
     loocv_mae = mean_absolute_error(y, loo_preds)
     loocv_r2 = r2_score(y, loo_preds)
 
-    pipeline.fit(X, y)
+    pipeline.fit(X, y, **fit_kwargs)
     in_sample_r2 = pipeline.score(X, y)
 
     return {
@@ -113,6 +135,11 @@ def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = Non
     1차/2차 다항회귀 중 LOOCV MAE가 5% 이상 개선되는 경우에만 2차를 채택
     (17개월 데이터로는 2차가 쉽게 과적합되므로 기본은 1차를 선호).
     peak_months를 지정하지 않으면 이 캠페인의 실제 DB수 패턴에서 자동 감지한다.
+    최근 달일수록 더 큰 가중치를 주어(RECENCY_HALF_LIFE_MONTHS) 최근 트렌드에 더 민감하게 반응한다.
+
+    camp_df에 "DA광고비" 컬럼이 있으면(build_paid_monthly_with_da), DA 채널은 예산이 늘수록
+    단가가 더 가파르게 오르는 경향이 있다는 가정을 별도 변수로 시도해보고, LOOCV MAE가
+    DA_IMPROVEMENT_THRESHOLD 이상 개선될 때만 채택한다(과적합 방지, 안 좋아지면 그냥 미채택).
     """
     camp_df = camp_df.sort_values("월")
     if peak_months is None:
@@ -121,14 +148,31 @@ def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = Non
     ad_spend = camp_df["광고비"].to_numpy(dtype=float)
     y = camp_df["DB수"].to_numpy(dtype=float)
     is_peak = _is_peak(camp_df["월"], peak_months)
+    weights = _recency_weights(camp_df["월"])
 
-    deg1 = _fit_degree(ad_spend, is_peak, y, degree=1)
-    deg2 = _fit_degree(ad_spend, is_peak, y, degree=2)
+    deg1 = _fit_degree(ad_spend, is_peak, y, degree=1, sample_weight=weights)
+    deg2 = _fit_degree(ad_spend, is_peak, y, degree=2, sample_weight=weights)
 
     if deg2["loocv_mae"] < deg1["loocv_mae"] * DEGREE2_IMPROVEMENT_THRESHOLD:
         chosen, alt = deg2, deg1
     else:
         chosen, alt = deg1, deg2
+
+    use_da = False
+    da_share = 0.0
+    if "DA광고비" in camp_df.columns:
+        da_spend = camp_df["DA광고비"].to_numpy(dtype=float)
+        if da_spend.sum() > 0:
+            recent_ad = ad_spend[-DA_SHARE_LOOKBACK_MONTHS:].sum()
+            recent_da = da_spend[-DA_SHARE_LOOKBACK_MONTHS:].sum()
+            da_share = float(recent_da / recent_ad) if recent_ad else 0.0
+
+            with_da = _fit_degree(
+                ad_spend, is_peak, y, degree=chosen["degree"], sample_weight=weights, da_spend=da_spend
+            )
+            if with_da["loocv_mae"] < chosen["loocv_mae"] * DA_IMPROVEMENT_THRESHOLD:
+                chosen = with_da
+                use_da = True
 
     chosen = dict(chosen)
     chosen["campaign"] = camp_df["캠페인구분"].iloc[0]
@@ -137,13 +181,16 @@ def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = Non
     chosen["alt_degree"] = alt["degree"]
     chosen["alt_loocv_mae"] = alt["loocv_mae"]
     chosen["alt_loocv_r2"] = alt["loocv_r2"]
+    chosen["use_da"] = use_da
+    chosen["da_share"] = da_share
     return chosen
 
 
 def predict_db_count(model_info: dict, budget, is_peak: float = 0.0) -> np.ndarray:
     budget = np.atleast_1d(np.asarray(budget, dtype=float))
     is_peak_arr = np.full_like(budget, is_peak)
-    X = _design_matrix(budget, is_peak_arr, model_info["degree"])
+    da_spend = budget * model_info["da_share"] if model_info.get("use_da") else None
+    X = _design_matrix(budget, is_peak_arr, model_info["degree"], da_spend=da_spend)
     pred = model_info["pipeline"].predict(X)
     return np.clip(pred, 1.0, None)  # 0 나누기 방지를 위해 최소 1로 클리핑
 
@@ -339,6 +386,7 @@ def build_budget_recommendations(
             "예상DB단가": expected_price,
             "모델신뢰도(R2)": model_info["loocv_r2"],
             "모델차수": model_info["degree"],
+            "DA반영여부": model_info["use_da"],
             "성수기월": sorted(peak_months),
             "효율좋은월": sorted(_campaign_efficiency_months(camp_df, campaign, media_df)),
             "비고": note,
@@ -368,10 +416,11 @@ def fit_organic_trend(organic_monthly: pd.DataFrame, campaign: str) -> dict | No
     month_index = camp_df["월"].apply(_month_to_index).to_numpy(dtype=float)
     is_peak = _is_peak(camp_df["월"], peak_months)
     log_db = np.log1p(camp_df["DB수"].to_numpy(dtype=float))
+    weights = _recency_weights(camp_df["월"])
 
     X = np.column_stack([month_index, is_peak])
     model = LinearRegression()
-    model.fit(X, log_db)
+    model.fit(X, log_db, sample_weight=weights)
 
     return {"model": model, "r2": model.score(X, log_db), "n_obs": len(camp_df), "peak_months": peak_months}
 

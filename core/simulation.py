@@ -16,7 +16,7 @@ from core.budget_model import (
     predict_organic_db,
     reference_db_price,
 )
-from core.daily_media_data import build_organic_monthly, build_paid_monthly, estimate_fixed_cost
+from core.daily_media_data import build_organic_monthly, build_paid_monthly_with_da, estimate_fixed_cost
 
 CONSERVATIVE_BAND = 0.10
 AGGRESSIVE_CONCENTRATION = 2.0
@@ -177,7 +177,7 @@ def run_simulation(
       시나리오는 최소 집행비용과 최소 DB목표를 모두 강제하고, 적극 시나리오는 최소 집행비용만
       강제하고 최소 DB목표는 미달 시 경고만 표시한다(효율 극대화 취지 유지).
     """
-    model_df = build_paid_monthly(media_df) if media_df is not None else df
+    model_df = build_paid_monthly_with_da(media_df) if media_df is not None else df
     organic_monthly = build_organic_monthly(media_df) if media_df is not None else None
 
     base_rec = build_budget_recommendations(
