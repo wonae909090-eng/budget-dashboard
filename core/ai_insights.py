@@ -89,7 +89,7 @@ def _template_explanation(sim: dict, model_report: pd.DataFrame) -> str:
     if all_warnings:
         sentences.append(f"추가로 시나리오 계산 과정에서 다음 유의사항이 발견되었습니다: {all_warnings[0]}")
     sentences.append(
-        "회귀모델이 17개월치 데이터로 학습된 만큼, 위 수치는 의사결정의 참고 자료로 활용하시기 바랍니다."
+        "회귀모델은 과거 실적 데이터로 학습된 참고치인 만큼, 위 수치는 의사결정의 참고 자료로 활용하시기 바랍니다."
     )
     return " ".join(sentences)
 

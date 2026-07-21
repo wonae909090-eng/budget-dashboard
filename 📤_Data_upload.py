@@ -8,7 +8,7 @@ import streamlit as st
 sys.path.append(os.path.dirname(__file__))
 
 from core.data_cleaning import clean_pipeline  # noqa: E402
-from core.daily_media_data import load_daily_data, load_media_data  # noqa: E402
+from core.daily_media_data import load_daily_data, load_fixed_cost_data, load_media_data  # noqa: E402
 from core.ui import setup_page  # noqa: E402
 
 st.set_page_config(page_title="Data upload", page_icon="📤", layout="wide")
@@ -18,18 +18,22 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DEFAULT_MONTHLY_PATH = os.path.join(DATA_DIR, "smartall_raw_data.xlsx")
 DEFAULT_DAILY_PATH = os.path.join(DATA_DIR, "smartall_daily_data.xlsx")
 DEFAULT_MEDIA_PATH = os.path.join(DATA_DIR, "smartall_media_data.xlsx")
+DEFAULT_FIXED_COST_PATH = os.path.join(DATA_DIR, "smartall_fixed_cost_data.xlsx")
 
 MONTHLY_COLUMNS = ["캠페인구분", "월", "광고비", "DB수", "DB단가", "입회수", "입회단가", "입회율"]
 DAILY_COLUMNS = ["캠페인구분", "일자", "광고비", "DB수", "DB단가"]
 MEDIA_COLUMNS = ["캠페인구분", "월", "매체", "광고비", "DB수", "DB단가", "입회수", "입회단가", "입회율"]
+FIXED_COST_COLUMNS = ["캠페인구분", "월", "고정비용"]
 
 st.title("📤 데이터 업로드")
 st.caption(
     "키즈 / 초등 / 중학 캠페인 데이터를 업로드하면 자동으로 정제되어 다른 페이지에서 바로 사용됩니다. "
-    "월별 · 일자별 · 매체별 데이터는 서로 합계를 맞추지 않는 완전히 별도의 데이터입니다."
+    "월별 · 일자별 · 매체별 · 고정비용 데이터는 서로 합계를 맞추지 않는 완전히 별도의 데이터입니다."
 )
 
-tab_monthly, tab_daily, tab_media = st.tabs(["📅 월별 데이터", "🗓️ 일자별 데이터", "📡 매체별 데이터"])
+tab_monthly, tab_daily, tab_media, tab_fixed_cost = st.tabs(
+    ["📅 월별 데이터", "🗓️ 일자별 데이터", "📡 매체별 데이터", "🧾 고정비용 데이터"]
+)
 
 with tab_monthly:
     st.caption(f"필수 컬럼: {', '.join(MONTHLY_COLUMNS)}")
@@ -199,3 +203,46 @@ with tab_media:
             st.success(f"✅ 매체별 데이터 반영 완료 ({len(media_df):,}행)")
             with st.expander("매체별 데이터 미리보기"):
                 st.dataframe(media_df, width='stretch', height=400)
+
+with tab_fixed_cost:
+    st.caption(
+        f"필수 컬럼: {', '.join(FIXED_COST_COLUMNS)} — 매체 집행비와 무관하게 나가는 제작비 등 부대비용. "
+        "예산 시뮬레이션에서 유료 매체 예산과는 별도로 총예산 표시에만 더해집니다."
+    )
+    fixed_cost_default_exists = os.path.exists(DEFAULT_FIXED_COST_PATH)
+    fixed_cost_uploaded = st.file_uploader(
+        "고정비용 데이터 파일 업로드 (xlsx 또는 csv)" if not fixed_cost_default_exists else
+        "고정비용 데이터 파일 업로드 (xlsx 또는 csv, 미업로드 시 기본 데이터 사용)",
+        type=["xlsx", "xls", "csv"],
+        key="upload_fixed_cost",
+    )
+
+    fixed_cost_data_path = None
+    if fixed_cost_uploaded is not None:
+        tmp_path = os.path.join(DATA_DIR, f"_uploaded_fixed_cost_{fixed_cost_uploaded.name}")
+        with open(tmp_path, "wb") as f:
+            f.write(fixed_cost_uploaded.getbuffer())
+        fixed_cost_data_path = tmp_path
+    elif fixed_cost_default_exists:
+        fixed_cost_data_path = DEFAULT_FIXED_COST_PATH
+        st.info(f"기본 데이터 파일을 사용합니다: {os.path.basename(DEFAULT_FIXED_COST_PATH)}")
+    else:
+        st.info(
+            "고정비용 데이터는 선택 사항입니다. 업로드하지 않으면 예산 시뮬레이션에서 고정비용을 0원으로 취급합니다."
+        )
+
+    if fixed_cost_data_path:
+        try:
+            fixed_cost_df = load_fixed_cost_data(fixed_cost_data_path)
+        except ValueError as e:
+            st.error(f"❌ 고정비용 데이터 형식이 맞지 않습니다: {e}")
+            fixed_cost_df = None
+        except Exception as e:  # noqa: BLE001
+            st.error(f"❌ 고정비용 데이터 로드 중 오류가 발생했습니다: {e}")
+            fixed_cost_df = None
+
+        if fixed_cost_df is not None:
+            st.session_state["fixed_cost_df"] = fixed_cost_df
+            st.success(f"✅ 고정비용 데이터 반영 완료 ({len(fixed_cost_df):,}행)")
+            with st.expander("고정비용 데이터 미리보기"):
+                st.dataframe(fixed_cost_df, width='stretch', height=400)

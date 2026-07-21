@@ -168,7 +168,7 @@ def answer_budget_query(query: str, budget_simulation: dict | None) -> str | Non
                 return f"{campaign} 캠페인의 추천 예산 정보를 찾을 수 없습니다."
             row = row.iloc[0]
             return (
-                f"{campaign} 캠페인의 현재예산은 {row['현재예산']:,.0f}원이며, "
+                f"{campaign} 캠페인의 참고예산(전년동월)은 {row['참고예산']:,.0f}원이며, "
                 f"추천예산은 {row['추천예산']:,.0f}원입니다. "
                 f"(예상DB수 {row['예상DB수']:,.0f}건, 예상DB단가 {row['예상DB단가']:,.0f}원, "
                 f"모델신뢰도 R²={row['모델신뢰도(R2)']:.2f})"

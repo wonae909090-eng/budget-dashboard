@@ -11,7 +11,8 @@ import streamlit as st
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from core.ai_insights import explain_simulation  # noqa: E402
-from core.budget_model import build_model_report  # noqa: E402
+from core.budget_model import build_model_report, fit_organic_trend, predict_organic_db  # noqa: E402
+from core.daily_media_data import build_organic_monthly, estimate_fixed_cost  # noqa: E402
 from core.simulation import run_simulation  # noqa: E402
 from core.ui import CAMPAIGN_COLORS, campaign_badge, setup_page, style_campaign_rows  # noqa: E402
 
@@ -25,11 +26,17 @@ if "processed_df" not in st.session_state:
 
 df = st.session_state["processed_df"]
 all_campaigns = sorted(df["캠페인구분"].unique())
+media_df = st.session_state.get("media_df")
+fixed_cost_df = st.session_state.get("fixed_cost_df")
 
-st.info(
-    "회귀 모델은 17개월치 데이터로 학습되어 **참고용**입니다. "
-    "모델 신뢰도(R²)가 낮은 캠페인은 결과 하단에 별도 표시됩니다."
-)
+info_lines = [
+    "회귀 모델은 월별 데이터로 학습되어 **참고용**입니다. 모델 신뢰도(R²)가 낮은 캠페인은 결과 하단에 별도 표시됩니다.",
+]
+if media_df is not None:
+    info_lines.append("매체별 데이터가 있어, 유료 확장형 매체만 모은 더 긴 기간으로 회귀를 학습합니다(정확도 향상).")
+else:
+    info_lines.append("매체별 데이터를 업로드하면 더 긴 기간으로 학습해 정확도를 높이고, 자연유입 채널을 분리할 수 있습니다.")
+st.info(" ".join(info_lines))
 
 
 def _future_months(last_month: str, n: int = 12) -> list[str]:
@@ -48,7 +55,7 @@ st.subheader("목표 입력")
 last_data_month = max(df["월"])
 future_month_options = _future_months(last_data_month)
 target_month = st.selectbox(
-    f"예측 대상월 (업로드된 데이터의 마지막 월: {last_data_month} 이후, 계절성 반영: 1·2·7·8월=성수기)",
+    f"예측 대상월 (업로드된 데이터의 마지막 월: {last_data_month} 이후, 계절성은 캠페인별 실제 데이터로 자동 판단)",
     future_month_options,
     index=0,
 )
@@ -87,11 +94,60 @@ else:
     if overall_target_db_price:
         target_prices = {c: overall_target_db_price for c in all_campaigns}
 
+organic_db_overrides: dict = {}
+fixed_cost_overrides: dict = {}
+
+if media_df is not None or fixed_cost_df is not None:
+    st.subheader("자연유입 DB수 / 고정비용 예상치 (선택)")
+    st.caption(
+        "자연유입(네이버BS·SNS 등)은 광고비와 무관하게 자체 추세를 따라가 별도로 예측하고, "
+        "고정비용(제작비 등)은 유료 매체 예산과 별도로 총예산에 더해집니다. "
+        "아래 값은 과거 데이터 기반 자동 추정치이며, 담당자가 아는 정보(프로모션 계획 등)가 있으면 직접 조정하세요."
+    )
+    organic_monthly = build_organic_monthly(media_df) if media_df is not None else None
+
+    est_cols = st.columns(len(all_campaigns))
+    for col, campaign in zip(est_cols, all_campaigns):
+        with col:
+            campaign_badge(campaign)
+            if organic_monthly is not None:
+                organic_trend = fit_organic_trend(organic_monthly, campaign)
+                organic_default = predict_organic_db(organic_trend, target_month)
+                organic_val = st.number_input(
+                    f"{campaign} 자연유입 예상DB수",
+                    min_value=0,
+                    value=int(round(organic_default)),
+                    key=f"organic_db_{campaign}_{target_month}",
+                )
+                organic_db_overrides[campaign] = organic_val
+            if fixed_cost_df is not None:
+                fixed_default = estimate_fixed_cost(fixed_cost_df, campaign)
+                fixed_val = st.number_input(
+                    f"{campaign} 고정비용(원)",
+                    min_value=0,
+                    value=int(round(fixed_default)),
+                    step=100_000,
+                    key=f"fixed_cost_{campaign}_{target_month}",
+                )
+                fixed_cost_overrides[campaign] = fixed_val
+
 st.subheader("총예산 설정 (선택)")
-st.caption("0이면 시나리오별로 회귀모델이 추천하는 자연스러운 총액을 그대로 사용합니다. 값을 입력하면 각 시나리오의 배분 비율은 유지한 채 총액을 이 값에 맞춥니다.")
+budget_caption = (
+    "0이면 시나리오별로 회귀모델이 추천하는 자연스러운 총액을 그대로 사용합니다. "
+    "값을 입력하면 각 시나리오의 배분 비율은 유지한 채 총액을 이 값에 맞춥니다."
+)
+if media_df is not None:
+    budget_caption += " (고정비용을 제외한 유료 매체 예산 기준입니다 — 고정비용은 위에서 별도로 반영됩니다.)"
+st.caption(budget_caption)
 overall_total_budget = st.number_input("전체 목표 총예산(원)", min_value=0, value=0, step=10_000_000)
 
-st.caption("캠페인별로 '이 금액을 정확히 배정'하고 싶다면 아래에 입력하세요. 입력한 캠페인은 모든 시나리오에서 그 금액 그대로 고정되고, 나머지 예산만 다른 캠페인들에게 배분됩니다.")
+fixed_budget_caption = (
+    "캠페인별로 '이 금액을 정확히 배정'하고 싶다면 아래에 입력하세요. "
+    "입력한 캠페인은 모든 시나리오에서 그 금액 그대로 고정되고, 나머지 예산만 다른 캠페인들에게 배분됩니다."
+)
+if media_df is not None:
+    fixed_budget_caption += " (고정비용 제외, 유료 매체 예산 기준입니다.)"
+st.caption(fixed_budget_caption)
 fixed_budgets: dict = {}
 fixed_cols = st.columns(len(all_campaigns))
 for col, campaign in zip(fixed_cols, all_campaigns):
@@ -102,12 +158,15 @@ for col, campaign in zip(fixed_cols, all_campaigns):
             fixed_budgets[campaign] = fb
 
 st.subheader("캠페인별 최소 보장 조건 (선택)")
-st.caption(
+min_condition_caption = (
     "각 캠페인에 최소한 배정해야 하는 집행비용과, 최소한 확보해야 하는 DB수입니다(위에서 총예산을 고정한 캠페인에는 적용되지 않습니다). "
     "보수·중립 시나리오는 두 조건을 모두 반영하고, 적극 시나리오는 효율 극대화 취지를 지키기 위해 "
     "최소 집행비용만 반영하며 최소 DB목표는 미달 시 경고로만 표시합니다. "
     "최소값 합계가 남은 예산을 넘으면 그 예산을 넘지 않도록 최소값을 비례 축소합니다."
 )
+if media_df is not None:
+    min_condition_caption += " (최소 집행비용도 고정비용 제외, 유료 매체 예산 기준입니다.)"
+st.caption(min_condition_caption)
 min_budgets: dict = {}
 min_db_counts: dict = {}
 min_cols = st.columns(len(all_campaigns))
@@ -135,6 +194,10 @@ if run_clicked:
         min_budgets=min_budgets or None,
         min_db_counts=min_db_counts or None,
         fixed_budgets=fixed_budgets or None,
+        media_df=media_df,
+        fixed_cost_df=fixed_cost_df,
+        organic_db_overrides=organic_db_overrides or None,
+        fixed_cost_overrides=fixed_cost_overrides or None,
     )
 
 if "budget_simulation" not in st.session_state:
@@ -145,11 +208,25 @@ sim = st.session_state["budget_simulation"]
 
 st.subheader("예산 시뮬레이션 결과")
 
+base_rec = sim["base_recommendation"]
+with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자동 감지)"):
+    st.caption(
+        "성수기월 = DB수가 많이 나오는 달(회귀 모델의 성수기 반영에 사용). "
+        "효율좋은월 = DB단가가 낮아 효율이 좋은 달(참고용 — 회귀 계산에는 쓰이지 않음)."
+    )
+    for _, row in base_rec.iterrows():
+        campaign_badge(row["캠페인구분"])
+        peak_str = ", ".join(f"{m}월" for m in row["성수기월"])
+        eff_str = ", ".join(f"{m}월" for m in row["효율좋은월"]) if row["효율좋은월"] else "데이터 부족으로 판단 불가"
+        st.caption(f"성수기월: {peak_str}  ·  효율좋은월: {eff_str}")
+
 SCENARIO_DESC = {
-    "보수": "현재 예산(최근 3개월 평균) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
+    "보수": "참고예산(전년 동월, 유료매체 기준) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
     "중립": "회귀모델 추천 예산 총합을 목표 DB수 비중으로 재배분",
     "적극": "회귀모델 추천 예산 총합을 DB단가 효율이 좋은 캠페인에 집중 배분",
 }
+
+DETAIL_COLUMNS = ["캠페인구분", "최근3개월평균", "유료매체예산", "고정비용", "유료매체예상DB수", "자연유입예상DB수"]
 
 tabs = st.tabs(["보수", "중립", "적극"])
 for tab, name in zip(tabs, ["보수", "중립", "적극"]):
@@ -170,13 +247,13 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
         else:
             m4.metric("목표 달성률", "목표 미입력")
 
-        st.markdown("**캠페인별 현재예산 vs 시나리오예산**")
-        display_table = table.copy()
+        st.markdown("**캠페인별 참고예산(전년동월) vs 시나리오예산**")
+        main_cols = ["캠페인구분", "참고예산", "시나리오예산", "예상DB수", "예상DB단가", "모델신뢰도(R2)"]
         styled_table = (
-            style_campaign_rows(display_table)
+            style_campaign_rows(table[main_cols])
             .format(
                 {
-                    "현재예산": "{:,.0f}",
+                    "참고예산": "{:,.0f}",
                     "시나리오예산": "{:,.0f}",
                     "예상DB수": "{:,.0f}",
                     "예상DB단가": "{:,.0f}",
@@ -187,13 +264,29 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
         )
         st.dataframe(styled_table, width="stretch")
 
+        with st.expander("상세 내역 보기 (유료매체 / 자연유입 / 고정비용 분리, 최근 3개월 평균 참고)"):
+            styled_detail = (
+                style_campaign_rows(table[DETAIL_COLUMNS])
+                .format(
+                    {
+                        "최근3개월평균": "{:,.0f}",
+                        "유료매체예산": "{:,.0f}",
+                        "고정비용": "{:,.0f}",
+                        "유료매체예상DB수": "{:,.0f}",
+                        "자연유입예상DB수": "{:,.0f}",
+                    }
+                )
+                .hide(axis="index")
+            )
+            st.dataframe(styled_detail, width="stretch")
+
         chart_df = table.melt(
-            id_vars="캠페인구분", value_vars=["현재예산", "시나리오예산"], var_name="구분", value_name="예산"
+            id_vars="캠페인구분", value_vars=["참고예산", "시나리오예산"], var_name="구분", value_name="예산"
         )
         fig = px.bar(
             chart_df, x="캠페인구분", y="예산", color="캠페인구분", pattern_shape="구분",
             color_discrete_map=CAMPAIGN_COLORS, barmode="group",
-            title=f"[{name}] 캠페인별 현재예산 vs 시나리오예산",
+            title=f"[{name}] 캠페인별 참고예산(전년동월) vs 시나리오예산",
         )
         st.plotly_chart(fig, width="stretch")
 

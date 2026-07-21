@@ -5,20 +5,53 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-PEAK_MONTHS = {1, 2, 7, 8}
+PEAK_MONTHS = {1, 2, 7, 8}  # 캠페인별 실제 패턴을 감지할 수 없을 때만 쓰는 대체값(fallback)
 RIDGE_ALPHA = 1.0
 DEGREE2_IMPROVEMENT_THRESHOLD = 0.95  # 2차 모델의 LOOCV MAE가 1차보다 5% 이상 개선돼야 채택
+MIN_CALENDAR_MONTHS_FOR_SEASONALITY = 4  # 이보다 캘린더월 종류가 적으면 성수기 자동감지를 못 하고 fallback
 
 
-def _is_peak(월_series: pd.Series) -> np.ndarray:
+def detect_peak_months(camp_df: pd.DataFrame, top_n: int = 4) -> set[int]:
+    """캠페인의 실제 월별 DB수 패턴에서 상위 top_n개 달을 성수기로 자동 감지.
+
+    캠페인마다 실제 성수기가 다를 수 있어(예: 교육 캠페인은 겨울방학·신학기 시즌 등) 하드코딩된
+    PEAK_MONTHS 대신 실제 데이터 기반으로 판단한다. 데이터가 너무 적어 캘린더월 종류가
+    부족하면 PEAK_MONTHS로 대체한다.
+    """
+    month_num = camp_df["월"].str.slice(5, 7).astype(int)
+    monthly_avg = camp_df.assign(_월num=month_num).groupby("_월num")["DB수"].mean()
+    if len(monthly_avg) < MIN_CALENDAR_MONTHS_FOR_SEASONALITY:
+        return set(PEAK_MONTHS)
+    top_months = monthly_avg.sort_values(ascending=False).head(top_n).index.tolist()
+    return {int(m) for m in top_months}
+
+
+def detect_efficiency_months(camp_df: pd.DataFrame, top_n: int = 4) -> set[int]:
+    """캠페인의 실제 월별 DB단가(광고비/DB수) 패턴에서 효율이 가장 좋은(단가가 낮은) top_n개 달 감지.
+
+    성수기(DB수가 많이 나오는 달)와는 별개 개념 — 물량이 아니라 "돈 대비 효율"이 좋은 달이라
+    캠페인마다 패턴이 다르게 나타난다 (참고용 인사이트, 회귀 계산 자체에는 쓰이지 않음).
+    """
+    camp_df = camp_df.copy()
+    month_num = camp_df["월"].str.slice(5, 7).astype(int)
+    db단가 = camp_df["광고비"] / camp_df["DB수"]
+    monthly_avg = db단가.groupby(month_num).mean()
+    if len(monthly_avg) < MIN_CALENDAR_MONTHS_FOR_SEASONALITY:
+        return set()
+    top_months = monthly_avg.sort_values(ascending=True).head(top_n).index.tolist()
+    return {int(m) for m in top_months}
+
+
+def _is_peak(월_series: pd.Series, peak_months: set[int] | None = None) -> np.ndarray:
+    peak_months = peak_months if peak_months is not None else PEAK_MONTHS
     month_num = 월_series.str.slice(5, 7).astype(int)
-    return month_num.isin(PEAK_MONTHS).astype(float).to_numpy()
+    return month_num.isin(peak_months).astype(float).to_numpy()
 
 
 def _design_matrix(ad_spend: np.ndarray, is_peak: np.ndarray, degree: int) -> np.ndarray:
@@ -49,16 +82,20 @@ def _fit_degree(ad_spend: np.ndarray, is_peak: np.ndarray, y: np.ndarray, degree
     }
 
 
-def fit_campaign_model(camp_df: pd.DataFrame) -> dict:
+def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = None) -> dict:
     """캠페인 1개의 월별 데이터로 DB수 ~ 광고비(+성수기 더미) 회귀모델 학습.
 
     1차/2차 다항회귀 중 LOOCV MAE가 5% 이상 개선되는 경우에만 2차를 채택
     (17개월 데이터로는 2차가 쉽게 과적합되므로 기본은 1차를 선호).
+    peak_months를 지정하지 않으면 이 캠페인의 실제 DB수 패턴에서 자동 감지한다.
     """
     camp_df = camp_df.sort_values("월")
+    if peak_months is None:
+        peak_months = detect_peak_months(camp_df)
+
     ad_spend = camp_df["광고비"].to_numpy(dtype=float)
     y = camp_df["DB수"].to_numpy(dtype=float)
-    is_peak = _is_peak(camp_df["월"])
+    is_peak = _is_peak(camp_df["월"], peak_months)
 
     deg1 = _fit_degree(ad_spend, is_peak, y, degree=1)
     deg2 = _fit_degree(ad_spend, is_peak, y, degree=2)
@@ -71,6 +108,7 @@ def fit_campaign_model(camp_df: pd.DataFrame) -> dict:
     chosen = dict(chosen)
     chosen["campaign"] = camp_df["캠페인구분"].iloc[0]
     chosen["n_obs"] = len(camp_df)
+    chosen["peak_months"] = peak_months
     chosen["alt_degree"] = alt["degree"]
     chosen["alt_loocv_mae"] = alt["loocv_mae"]
     chosen["alt_loocv_r2"] = alt["loocv_r2"]
@@ -91,12 +129,39 @@ def predict_db_price(model_info: dict, budget, is_peak: float = 0.0) -> np.ndarr
     return budget / db_count
 
 
-def get_current_budget(camp_df: pd.DataFrame, method: str = "avg3") -> float:
-    """현재예산 산출. method='avg3'(최근 3개월 평균, 기본값) 또는 'latest'(최근월)."""
-    camp_df = camp_df.sort_values("월")
-    if method == "latest":
-        return float(camp_df["광고비"].iloc[-1])
-    return float(camp_df["광고비"].tail(3).mean())
+def get_recent_avg_budget(camp_df: pd.DataFrame, n: int = 3) -> float:
+    """최근 n개월 평균 광고비 (보조 참고치 — 최신 흐름/모멘텀 파악용)."""
+    return float(camp_df.sort_values("월")["광고비"].tail(n).mean())
+
+
+def get_prior_year_budget(camp_df: pd.DataFrame, target_month: str) -> float | None:
+    """전년 동월 실제 광고비. 해당 월 데이터가 없으면 None."""
+    year, mon = int(target_month[:4]), int(target_month[5:7])
+    prior_month = f"{year - 1:04d}-{mon:02d}"
+    match = camp_df[camp_df["월"] == prior_month]
+    if match.empty:
+        return None
+    return float(match["광고비"].iloc[0])
+
+
+def get_reference_budget(camp_df: pd.DataFrame, target_month: str | None) -> dict:
+    """예산 시뮬레이션 비교 기준(참고예산) 산출.
+
+    메인 기준은 "전년 동월" 실제 집행액 — 교육업계는 계절성이 뚜렷해(겨울방학·신학기 등)
+    최근 3개월보다 작년 같은 달과 비교하는 것이 왜곡이 적다. 전년 동월 데이터가 없으면
+    최근 3개월 평균으로 대체한다. 최근 3개월 평균은 "최신 흐름"을 보여주는 보조 참고치로
+    항상 함께 반환한다.
+    """
+    recent_avg = get_recent_avg_budget(camp_df)
+    prior_year = get_prior_year_budget(camp_df, target_month) if target_month else None
+
+    if prior_year is not None:
+        return {"참고예산": prior_year, "참고예산기준": "전년동월", "최근3개월평균": recent_avg}
+    return {
+        "참고예산": recent_avg,
+        "참고예산기준": "최근3개월평균(전년동월 데이터 없음)",
+        "최근3개월평균": recent_avg,
+    }
 
 
 def reference_db_price(camp_df: pd.DataFrame, target_price: float | None = None, lookback: int = 12) -> float:
@@ -193,28 +258,31 @@ def build_budget_recommendations(
     df: pd.DataFrame,
     method: str = "target_price",
     target_prices: dict | None = None,
-    current_budget_method: str = "avg3",
     target_month: str | None = None,
+    reference_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """캠페인별 회귀모델 학습 + 예산 추천 결과.
 
     method: "target_price"(목표 DB단가를 만족하는 최대 예산) 또는 "inflection"(DB단가 급등 변곡점)
     target_prices: {캠페인명: 목표DB단가}. 미지정 캠페인은 최근 3개월 실제 DB단가를 목표로 사용.
-    target_month: 예측 대상월("YYYY-MM"), 성수기(1,2,7,8월) 여부 판단에 사용. 미지정 시 비성수기 기준.
+    target_month: 예측 대상월("YYYY-MM"). 캠페인별로 자동 감지된 성수기 여부 판단에 사용.
+    성수기는 캠페인마다 실제 DB수 패턴에서 자동 감지하며(detect_peak_months), 캠페인마다 다를 수 있다.
+    reference_df: "참고예산"(화면 표시용 전년동월 비교치) 계산에 쓸 데이터. 미지정 시 df를 그대로 사용.
+    회귀는 유료매체 전용 확장 데이터(df)로 하되, 참고예산은 실제 총광고비 공식 데이터(reference_df)로
+    보여주고 싶을 때 서로 다른 데이터를 넘길 수 있다.
     """
     target_prices = target_prices or {}
-
-    if target_month:
-        month_num = int(target_month.split("-")[1])
-        is_peak_target = 1.0 if month_num in PEAK_MONTHS else 0.0
-    else:
-        is_peak_target = 0.0
+    reference_source = reference_df if reference_df is not None else df
 
     rows = []
     for campaign in sorted(df["캠페인구분"].unique()):
         camp_df = df[df["캠페인구분"] == campaign]
         model_info = fit_campaign_model(camp_df)
-        current_budget = get_current_budget(camp_df, method=current_budget_method)
+        peak_months = model_info["peak_months"]
+        is_peak_target = 1.0 if (target_month and int(target_month.split("-")[1]) in peak_months) else 0.0
+
+        ref_camp_df = reference_source[reference_source["캠페인구분"] == campaign]
+        reference = get_reference_budget(ref_camp_df if not ref_camp_df.empty else camp_df, target_month)
 
         notes = []
         if method == "inflection":
@@ -226,8 +294,8 @@ def build_budget_recommendations(
                 notes.append("목표 DB단가 미입력 → 최근 3개월 실제 DB단가를 목표로 사용")
             recommended_budget = recommend_by_target_price(model_info, camp_df, target_price, is_peak_target)
             if recommended_budget is None:
-                recommended_budget = current_budget
-                notes.append("목표 DB단가를 만족하는 예산 구간을 찾지 못해 현재예산 유지")
+                recommended_budget = reference["참고예산"]
+                notes.append("목표 DB단가를 만족하는 예산 구간을 찾지 못해 참고예산 유지")
         note = "; ".join(notes)
 
         expected_db = float(predict_db_count(model_info, recommended_budget, is_peak_target)[0])
@@ -235,16 +303,61 @@ def build_budget_recommendations(
 
         rows.append({
             "캠페인구분": campaign,
-            "현재예산": current_budget,
+            "참고예산": reference["참고예산"],
+            "참고예산기준": reference["참고예산기준"],
+            "최근3개월평균": reference["최근3개월평균"],
             "추천예산": recommended_budget,
             "예상DB수": expected_db,
             "예상DB단가": expected_price,
             "모델신뢰도(R2)": model_info["loocv_r2"],
             "모델차수": model_info["degree"],
+            "성수기월": sorted(peak_months),
+            "효율좋은월": sorted(detect_efficiency_months(camp_df)),
             "비고": note,
         })
 
     return pd.DataFrame(rows)
+
+
+def _month_to_index(month: str) -> int:
+    """'YYYY-MM' 문자열을 연속된 정수로 변환(추세 회귀의 시간축)."""
+    year, mon = int(month[:4]), int(month[5:7])
+    return year * 12 + mon
+
+
+def fit_organic_trend(organic_monthly: pd.DataFrame, campaign: str) -> dict | None:
+    """자연유입/브랜드 채널 DB수를 월별 추세(로그선형회귀)로 학습.
+
+    이 채널들은 광고비를 늘린다고 DB수가 늘지 않고 연도별 수요·브랜드 쿼리 추세를 따라가므로,
+    광고비→DB수 회귀와는 별도로 시간축(월 인덱스 + 성수기 더미)만으로 예측한다.
+    데이터가 3개월 미만이면 추세를 학습할 수 없어 None을 반환한다.
+    """
+    camp_df = organic_monthly[organic_monthly["캠페인구분"] == campaign].sort_values("월")
+    if len(camp_df) < 3:
+        return None
+
+    peak_months = detect_peak_months(camp_df)
+    month_index = camp_df["월"].apply(_month_to_index).to_numpy(dtype=float)
+    is_peak = _is_peak(camp_df["월"], peak_months)
+    log_db = np.log1p(camp_df["DB수"].to_numpy(dtype=float))
+
+    X = np.column_stack([month_index, is_peak])
+    model = LinearRegression()
+    model.fit(X, log_db)
+
+    return {"model": model, "r2": model.score(X, log_db), "n_obs": len(camp_df), "peak_months": peak_months}
+
+
+def predict_organic_db(trend_info: dict | None, target_month: str) -> float:
+    """자연유입 채널의 target_month DB수 예측치. 추세 학습 실패/데이터 부족 시 0."""
+    if trend_info is None:
+        return 0.0
+    month_index = _month_to_index(target_month)
+    peak_months = trend_info.get("peak_months", PEAK_MONTHS)
+    is_peak = 1.0 if int(target_month.split("-")[1]) in peak_months else 0.0
+    X = np.array([[month_index, is_peak]], dtype=float)
+    log_pred = trend_info["model"].predict(X)[0]
+    return max(0.0, float(np.expm1(log_pred)))
 
 
 @st.cache_data(show_spinner="회귀 모델 학습 및 예산 추천 계산 중...")
@@ -252,7 +365,6 @@ def cached_budget_recommendations(
     df: pd.DataFrame,
     method: str = "target_price",
     target_prices: dict | None = None,
-    current_budget_method: str = "avg3",
     target_month: str | None = None,
 ) -> pd.DataFrame:
-    return build_budget_recommendations(df, method, target_prices, current_budget_method, target_month)
+    return build_budget_recommendations(df, method, target_prices, target_month)
