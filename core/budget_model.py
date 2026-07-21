@@ -129,13 +129,19 @@ def _fit_degree(
     }
 
 
-def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = None) -> dict:
+def fit_campaign_model(
+    camp_df: pd.DataFrame, peak_months: set[int] | None = None,
+    recency_half_life: float = RECENCY_HALF_LIFE_MONTHS,
+) -> dict:
     """캠페인 1개의 월별 데이터로 DB수 ~ 광고비(+성수기 더미) 회귀모델 학습.
 
     1차/2차 다항회귀 중 LOOCV MAE가 5% 이상 개선되는 경우에만 2차를 채택
     (17개월 데이터로는 2차가 쉽게 과적합되므로 기본은 1차를 선호).
     peak_months를 지정하지 않으면 이 캠페인의 실제 DB수 패턴에서 자동 감지한다.
-    최근 달일수록 더 큰 가중치를 주어(RECENCY_HALF_LIFE_MONTHS) 최근 트렌드에 더 민감하게 반응한다.
+    최근 달일수록 더 큰 가중치를 주어(recency_half_life) 최근 트렌드에 더 민감하게 반응한다.
+    신제품 출시 등으로 최근 추세가 과거와 뚜렷이 달라진 캠페인은 half_life를 줄이면
+    (예: 6개월) 옛 데이터의 영향력을 더 빨리 줄일 수 있다. 다만 half_life가 너무 작으면
+    표본이 사실상 최근 몇 달로 좁아져 신뢰도(R²)가 떨어질 수 있다.
 
     camp_df에 "DA광고비" 컬럼이 있으면(build_paid_monthly_with_da), DA 채널은 예산이 늘수록
     단가가 더 가파르게 오르는 경향이 있다는 가정을 별도 변수로 시도해보고, LOOCV MAE가
@@ -148,7 +154,7 @@ def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = Non
     ad_spend = camp_df["광고비"].to_numpy(dtype=float)
     y = camp_df["DB수"].to_numpy(dtype=float)
     is_peak = _is_peak(camp_df["월"], peak_months)
-    weights = _recency_weights(camp_df["월"])
+    weights = _recency_weights(camp_df["월"], half_life=recency_half_life)
 
     deg1 = _fit_degree(ad_spend, is_peak, y, degree=1, sample_weight=weights)
     deg2 = _fit_degree(ad_spend, is_peak, y, degree=2, sample_weight=weights)
@@ -178,6 +184,7 @@ def fit_campaign_model(camp_df: pd.DataFrame, peak_months: set[int] | None = Non
     chosen["campaign"] = camp_df["캠페인구분"].iloc[0]
     chosen["n_obs"] = len(camp_df)
     chosen["peak_months"] = peak_months
+    chosen["recency_half_life"] = recency_half_life
     chosen["alt_degree"] = alt["degree"]
     chosen["alt_loocv_mae"] = alt["loocv_mae"]
     chosen["alt_loocv_r2"] = alt["loocv_r2"]
@@ -333,6 +340,7 @@ def build_budget_recommendations(
     target_month: str | None = None,
     reference_df: pd.DataFrame | None = None,
     media_df: pd.DataFrame | None = None,
+    recency_half_life_overrides: dict | None = None,
 ) -> pd.DataFrame:
     """캠페인별 회귀모델 학습 + 예산 추천 결과.
 
@@ -345,14 +353,19 @@ def build_budget_recommendations(
     보여주고 싶을 때 서로 다른 데이터를 넘길 수 있다.
     media_df: "효율좋은월" 판단에 쓸 매체별 원본 데이터. 주어지면 캠페인별 핵심 채널
     (EFFICIENCY_KEY_CHANNELS)의 실적만으로 효율 우수월을 판단하고, 없으면 df 전체 평균으로 판단한다.
+    recency_half_life_overrides: {캠페인명: 반감기(개월)}. 신제품 출시 등으로 최근 추세가 과거와
+    뚜렷이 달라진 캠페인만 값을 줄여서(예: 6개월) 옛 데이터의 영향력을 더 빨리 줄일 수 있다.
+    미지정 캠페인은 기본값(RECENCY_HALF_LIFE_MONTHS)을 그대로 쓴다.
     """
     target_prices = target_prices or {}
     reference_source = reference_df if reference_df is not None else df
+    recency_half_life_overrides = recency_half_life_overrides or {}
 
     rows = []
     for campaign in sorted(df["캠페인구분"].unique()):
         camp_df = df[df["캠페인구분"] == campaign]
-        model_info = fit_campaign_model(camp_df)
+        half_life = recency_half_life_overrides.get(campaign, RECENCY_HALF_LIFE_MONTHS)
+        model_info = fit_campaign_model(camp_df, recency_half_life=half_life)
         peak_months = model_info["peak_months"]
         is_peak_target = 1.0 if (target_month and int(target_month.split("-")[1]) in peak_months) else 0.0
 
@@ -387,6 +400,7 @@ def build_budget_recommendations(
             "모델신뢰도(R2)": model_info["loocv_r2"],
             "모델차수": model_info["degree"],
             "DA반영여부": model_info["use_da"],
+            "재현성반감기(개월)": half_life,
             "성수기월": sorted(peak_months),
             "효율좋은월": sorted(_campaign_efficiency_months(camp_df, campaign, media_df)),
             "비고": note,

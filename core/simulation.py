@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from core.budget_model import (
+    RECENCY_HALF_LIFE_MONTHS,
     build_budget_recommendations,
     fit_campaign_model,
     fit_organic_trend,
@@ -157,6 +158,7 @@ def run_simulation(
     fixed_cost_df: pd.DataFrame | None = None,
     organic_db_overrides: dict | None = None,
     fixed_cost_overrides: dict | None = None,
+    recency_half_life_overrides: dict | None = None,
 ) -> dict:
     """보수/중립/적극 3개 시나리오를 계산해 결과 dict로 반환.
 
@@ -169,6 +171,9 @@ def run_simulation(
     - fixed_cost_df가 주어지면 제작비 등 고정비용을 캠페인별로 추정해 "시나리오예산"(화면 표시용
       총예산)에 더한다. 유료매체 예산 배분 로직 자체는 고정비용과 무관하게 유료매체 풀만 갖고 계산한다.
       fixed_cost_overrides로 캠페인별 값을 직접 지정할 수도 있다.
+    - recency_half_life_overrides: {캠페인명: 반감기(개월)}. 신제품 출시 등으로 최근 추세가 과거와
+      뚜렷이 달라진 캠페인만 값을 줄여서 옛 데이터의 영향력을 더 빨리 줄일 수 있다. 미지정 캠페인은
+      기본 반감기(12개월)를 그대로 쓴다.
     - overall_total_budget/fixed_budgets/min_budgets는 모두 "유료매체 예산" 기준이다(고정비용 제외).
     - overall_total_budget이 주어지면 각 시나리오의 배분 '비율'은 유지한 채 총액을 이 값에 맞춘다.
     - fixed_budgets는 캠페인별로 "정확히 이 금액을 배정"하는 고정값이다. 고정된 캠페인은 시나리오
@@ -179,10 +184,11 @@ def run_simulation(
     """
     model_df = build_paid_monthly_with_da(media_df) if media_df is not None else df
     organic_monthly = build_organic_monthly(media_df) if media_df is not None else None
+    recency_half_life_overrides = recency_half_life_overrides or {}
 
     base_rec = build_budget_recommendations(
         model_df, method="target_price", target_prices=target_prices, target_month=target_month,
-        reference_df=df, media_df=media_df,
+        reference_df=df, media_df=media_df, recency_half_life_overrides=recency_half_life_overrides,
     )
     reference_map = base_rec.set_index("캠페인구분")["참고예산"]  # 화면 표시용(전체 총광고비 기준)
     recent_avg_map = base_rec.set_index("캠페인구분")["최근3개월평균"]  # 화면 표시용 보조 참고치
@@ -194,7 +200,13 @@ def run_simulation(
     fixed_cost_overrides = fixed_cost_overrides or {}
 
     campaigns = base_rec["캠페인구분"].tolist()
-    models = {c: fit_campaign_model(model_df[model_df["캠페인구분"] == c]) for c in campaigns}
+    models = {
+        c: fit_campaign_model(
+            model_df[model_df["캠페인구분"] == c],
+            recency_half_life=recency_half_life_overrides.get(c, RECENCY_HALF_LIFE_MONTHS),
+        )
+        for c in campaigns
+    }
 
     is_peak_map = {
         c: (1.0 if target_month and int(target_month.split("-")[1]) in models[c]["peak_months"] else 0.0)

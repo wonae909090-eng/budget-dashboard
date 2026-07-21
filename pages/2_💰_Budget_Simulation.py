@@ -163,6 +163,25 @@ if media_df is not None or fixed_cost_df is not None:
                 )
                 fixed_cost_overrides[campaign] = fixed_val
 
+with st.expander("⚙️ 회귀 모델 세부 설정 (선택) — 최근 트렌드 반영 강도"):
+    st.caption(
+        "회귀 모델은 기본적으로 최근 달일수록 더 큰 가중치를 둡니다(12개월 반감기 — 12개월 전 데이터는 "
+        "가중치가 절반). 신제품 출시 등으로 특정 캠페인의 최근 추세가 과거와 뚜렷이 달라졌다면, "
+        "그 캠페인만 반감기를 줄여서 최근 데이터에 더 민감하게 반응하도록 조정할 수 있습니다. "
+        "다만 너무 줄이면 표본이 사실상 최근 몇 달로 좁아져 모델 신뢰도(R²)가 떨어질 수 있습니다."
+    )
+    recency_half_life_overrides: dict = {}
+    half_life_cols = st.columns(len(all_campaigns))
+    for col, campaign in zip(half_life_cols, all_campaigns):
+        with col:
+            campaign_badge(campaign)
+            half_life = st.number_input(
+                f"{campaign} 반감기(개월)",
+                min_value=1, max_value=36, value=12,
+                key=f"recency_half_life_{campaign}",
+            )
+            recency_half_life_overrides[campaign] = half_life
+
 st.subheader("캠페인별 최소 보장 조건 (선택)")
 min_condition_caption = (
     "각 캠페인에 최소한 배정해야 하는 집행비용과, 최소한 확보해야 하는 DB수입니다(위에서 총예산을 고정한 캠페인에는 적용되지 않습니다). "
@@ -204,6 +223,7 @@ if run_clicked:
         fixed_cost_df=fixed_cost_df,
         organic_db_overrides=organic_db_overrides or None,
         fixed_cost_overrides=fixed_cost_overrides or None,
+        recency_half_life_overrides=recency_half_life_overrides or None,
     )
 
 if "budget_simulation" not in st.session_state:
@@ -237,7 +257,11 @@ with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자
         peak_str = ", ".join(f"{m}월" for m in row["성수기월"])
         eff_str = ", ".join(f"{m}월" for m in row["효율좋은월"]) if row["효율좋은월"] else "데이터 부족으로 판단 불가"
         da_str = "반영됨" if row["DA반영여부"] else "미반영(개선 효과 없어 기존 방식 유지)"
-        st.caption(f"성수기월(광고비 집행 기준): {peak_str}  ·  효율좋은월: {eff_str}  ·  DA채널 단가상승 반영: {da_str}")
+        hl = row["재현성반감기(개월)"]
+        st.caption(
+            f"성수기월(광고비 집행 기준): {peak_str}  ·  효율좋은월: {eff_str}  ·  "
+            f"DA채널 단가상승 반영: {da_str}  ·  최근 트렌드 반영 반감기: {hl:.0f}개월"
+        )
 
 with st.expander("❓ 보수 / 중립 / 적극, 어떻게 다른가요?"):
     st.markdown(
