@@ -67,8 +67,12 @@ def campaign_badge(campaign: str) -> None:
     st.markdown(campaign_badge_html(campaign), unsafe_allow_html=True)
 
 
-def style_campaign_rows(df, col: str = "캠페인구분"):
-    """DataFrame의 캠페인 컬럼 값에 따라 행 배경색을 캠페인 고유 색상(옅은 톤)으로 칠한 Styler 반환."""
+def style_campaign_rows(df, col: str = "캠페인구분", neutral_cols: list[str] | None = None):
+    """DataFrame의 캠페인 컬럼 값에 따라 행 배경색을 캠페인 고유 색상(옅은 톤)으로 칠한 Styler 반환.
+
+    neutral_cols를 지정하면 그 컬럼들은 캠페인 색상 대신 중립 회색 음영으로 덮어써서,
+    "참고용" 컬럼(계산 결과가 아닌 비교 기준치 등)임을 시각적으로 구분해 보여준다.
+    """
 
     def _row_style(row):
         color = CAMPAIGN_COLORS.get(row[col])
@@ -76,4 +80,11 @@ def style_campaign_rows(df, col: str = "캠페인구분"):
             return [""] * len(row)
         return [f"background-color:{color}22"] * len(row)
 
-    return df.style.apply(_row_style, axis=1)
+    styler = df.style.apply(_row_style, axis=1)
+    if neutral_cols:
+        existing = [c for c in neutral_cols if c in df.columns]
+        if existing:
+            styler = styler.set_properties(
+                subset=existing, **{"background-color": "#8888881a", "color": "#666666"}
+            )
+    return styler
