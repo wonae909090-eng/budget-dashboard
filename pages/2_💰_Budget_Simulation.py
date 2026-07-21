@@ -49,6 +49,34 @@ def _future_months(last_month: str, n: int = 12) -> list[str]:
     return months
 
 
+# ── 총예산 설정 폼 (목표 입력보다 먼저 — 목표 DB단가 자동계산에 사용) ──────
+st.subheader("총예산 설정 (선택)")
+budget_caption = (
+    "0이면 시나리오별로 회귀모델이 추천하는 자연스러운 총액을 그대로 사용합니다. "
+    "값을 입력하면 각 시나리오의 배분 비율은 유지한 채 총액을 이 값에 맞춥니다. "
+    "여기서 입력한 값은 아래 '목표 입력'의 목표 DB단가 자동계산에도 사용됩니다."
+)
+if media_df is not None:
+    budget_caption += " (고정비용을 제외한 유료 매체 예산 기준입니다 — 고정비용은 뒤에서 별도로 반영됩니다.)"
+st.caption(budget_caption)
+overall_total_budget = st.number_input("전체 목표 총예산(원)", min_value=0, value=0, step=10_000_000)
+
+fixed_budget_caption = (
+    "캠페인별로 '이 금액을 정확히 배정'하고 싶다면 아래에 입력하세요. "
+    "입력한 캠페인은 모든 시나리오에서 그 금액 그대로 고정되고, 나머지 예산만 다른 캠페인들에게 배분됩니다."
+)
+if media_df is not None:
+    fixed_budget_caption += " (고정비용 제외, 유료 매체 예산 기준입니다.)"
+st.caption(fixed_budget_caption)
+fixed_budgets: dict = {}
+fixed_cols = st.columns(len(all_campaigns))
+for col, campaign in zip(fixed_cols, all_campaigns):
+    with col:
+        campaign_badge(campaign)
+        fb = st.number_input(f"{campaign} 총예산(원)", min_value=0, value=0, step=10_000_000, key=f"fixed_budget_{campaign}")
+        if fb:
+            fixed_budgets[campaign] = fb
+
 # ── 목표 입력 폼 ───────────────────────────────────────
 st.subheader("목표 입력")
 
@@ -83,7 +111,11 @@ else:
     with c1:
         overall_target_db_count = st.number_input("전체 목표 DB수", min_value=0, value=0)
     with c2:
-        overall_target_db_price = st.number_input("전체 목표 DB단가(원)", min_value=0, value=0)
+        if overall_total_budget and overall_target_db_count:
+            overall_target_db_price = overall_total_budget / overall_target_db_count
+            st.metric("전체 목표 DB단가 (자동계산: 총예산÷목표DB수)", f"{overall_target_db_price:,.0f}원")
+        else:
+            st.caption("위 '총예산 설정'과 목표 DB수를 모두 입력하면 목표 DB단가가 자동 계산됩니다. (미입력 시 최근 실적 기준으로 자동 설정됩니다)")
 
     if overall_target_db_count:
         recent_db_share = df.groupby("캠페인구분").apply(
@@ -130,32 +162,6 @@ if media_df is not None or fixed_cost_df is not None:
                     key=f"fixed_cost_{campaign}_{target_month}",
                 )
                 fixed_cost_overrides[campaign] = fixed_val
-
-st.subheader("총예산 설정 (선택)")
-budget_caption = (
-    "0이면 시나리오별로 회귀모델이 추천하는 자연스러운 총액을 그대로 사용합니다. "
-    "값을 입력하면 각 시나리오의 배분 비율은 유지한 채 총액을 이 값에 맞춥니다."
-)
-if media_df is not None:
-    budget_caption += " (고정비용을 제외한 유료 매체 예산 기준입니다 — 고정비용은 위에서 별도로 반영됩니다.)"
-st.caption(budget_caption)
-overall_total_budget = st.number_input("전체 목표 총예산(원)", min_value=0, value=0, step=10_000_000)
-
-fixed_budget_caption = (
-    "캠페인별로 '이 금액을 정확히 배정'하고 싶다면 아래에 입력하세요. "
-    "입력한 캠페인은 모든 시나리오에서 그 금액 그대로 고정되고, 나머지 예산만 다른 캠페인들에게 배분됩니다."
-)
-if media_df is not None:
-    fixed_budget_caption += " (고정비용 제외, 유료 매체 예산 기준입니다.)"
-st.caption(fixed_budget_caption)
-fixed_budgets: dict = {}
-fixed_cols = st.columns(len(all_campaigns))
-for col, campaign in zip(fixed_cols, all_campaigns):
-    with col:
-        campaign_badge(campaign)
-        fb = st.number_input(f"{campaign} 총예산(원)", min_value=0, value=0, step=10_000_000, key=f"fixed_budget_{campaign}")
-        if fb:
-            fixed_budgets[campaign] = fb
 
 st.subheader("캠페인별 최소 보장 조건 (선택)")
 min_condition_caption = (
