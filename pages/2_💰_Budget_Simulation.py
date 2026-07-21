@@ -207,6 +207,11 @@ if "budget_simulation" not in st.session_state:
 sim = st.session_state["budget_simulation"]
 
 st.subheader("예산 시뮬레이션 결과")
+st.caption(
+    "⚠️ 회귀 모델(추천예산 계산 자체)은 최신 달까지 포함한 전체 기간 데이터로 학습됩니다. "
+    "아래 '참고예산'과 '최근3개월평균'은 계산 결과가 아니라, 그 추천이 과거 대비 얼마나 "
+    "큰 변화인지 보여주는 비교용 숫자일 뿐입니다."
+)
 
 base_rec = sim["base_recommendation"]
 with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자동 감지)"):
@@ -229,7 +234,7 @@ SCENARIO_DESC = {
     "적극": "회귀모델 추천 예산 총합을 DB단가 효율이 좋은 캠페인에 집중 배분",
 }
 
-DETAIL_COLUMNS = ["캠페인구분", "최근3개월평균", "유료매체예산", "고정비용", "유료매체예상DB수", "자연유입예상DB수"]
+DETAIL_COLUMNS = ["캠페인구분", "유료매체예산", "고정비용", "유료매체예상DB수", "자연유입예상DB수"]
 
 tabs = st.tabs(["보수", "중립", "적극"])
 for tab, name in zip(tabs, ["보수", "중립", "적극"]):
@@ -250,13 +255,14 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
         else:
             m4.metric("목표 달성률", "목표 미입력")
 
-        st.markdown("**캠페인별 참고예산(전년동월) vs 시나리오예산**")
-        main_cols = ["캠페인구분", "참고예산", "시나리오예산", "예상DB수", "예상DB단가", "모델신뢰도(R2)"]
+        st.markdown("**캠페인별 참고예산(전년동월 · 최근3개월평균) vs 시나리오예산**")
+        main_cols = ["캠페인구분", "참고예산", "최근3개월평균", "시나리오예산", "예상DB수", "예상DB단가", "모델신뢰도(R2)"]
         styled_table = (
             style_campaign_rows(table[main_cols])
             .format(
                 {
                     "참고예산": "{:,.0f}",
+                    "최근3개월평균": "{:,.0f}",
                     "시나리오예산": "{:,.0f}",
                     "예상DB수": "{:,.0f}",
                     "예상DB단가": "{:,.0f}",
@@ -266,8 +272,9 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             .hide(axis="index")
         )
         st.dataframe(styled_table, width="stretch")
+        st.caption("참고예산 = 전년 동월 실제 집행액(메인 비교 기준). 최근3개월평균 = 최신 흐름 참고용(보조).")
 
-        with st.expander("상세 내역 보기 (유료매체 / 자연유입 / 고정비용 분리, 최근 3개월 평균 참고)"):
+        with st.expander("상세 내역 보기 (유료매체 / 자연유입 / 고정비용 분리)"):
             styled_detail = (
                 style_campaign_rows(table[DETAIL_COLUMNS])
                 .format(
@@ -284,12 +291,13 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             st.dataframe(styled_detail, width="stretch")
 
         chart_df = table.melt(
-            id_vars="캠페인구분", value_vars=["참고예산", "시나리오예산"], var_name="구분", value_name="예산"
+            id_vars="캠페인구분", value_vars=["참고예산", "최근3개월평균", "시나리오예산"],
+            var_name="구분", value_name="예산",
         )
         fig = px.bar(
             chart_df, x="캠페인구분", y="예산", color="캠페인구분", pattern_shape="구분",
             color_discrete_map=CAMPAIGN_COLORS, barmode="group",
-            title=f"[{name}] 캠페인별 참고예산(전년동월) vs 시나리오예산",
+            title=f"[{name}] 캠페인별 참고예산(전년동월·최근3개월평균) vs 시나리오예산",
         )
         st.plotly_chart(fig, width="stretch")
 
