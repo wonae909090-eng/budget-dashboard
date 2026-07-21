@@ -11,21 +11,27 @@ from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from core.daily_media_data import EFFICIENCY_KEY_CHANNELS, build_key_channel_monthly
+
 PEAK_MONTHS = {1, 2, 7, 8}  # 캠페인별 실제 패턴을 감지할 수 없을 때만 쓰는 대체값(fallback)
 RIDGE_ALPHA = 1.0
 DEGREE2_IMPROVEMENT_THRESHOLD = 0.95  # 2차 모델의 LOOCV MAE가 1차보다 5% 이상 개선돼야 채택
-MIN_CALENDAR_MONTHS_FOR_SEASONALITY = 4  # 이보다 캘린더월 종류가 적으면 성수기 자동감지를 못 하고 fallback
+MIN_CALENDAR_MONTHS_FOR_SEASONALITY = 4  # 이보다 캘린더월 종류가 적으면 자동감지를 못 하고 fallback
+LOW_SPEND_EXCLUDE_RATIO = 0.5  # 평균 대비 이 비율 미만으로 쓴 달은 "저예산이라 단가가 낮아 보이는 착시"로 보고 제외
 
 
-def detect_peak_months(camp_df: pd.DataFrame, top_n: int = 4) -> set[int]:
-    """캠페인의 실제 월별 DB수 패턴에서 상위 top_n개 달을 성수기로 자동 감지.
+def detect_peak_months(camp_df: pd.DataFrame, top_n: int = 4, metric: str = "광고비") -> set[int]:
+    """캠페인의 실제 월별 패턴에서 상위 top_n개 달을 성수기(집행성수기)로 자동 감지.
 
-    캠페인마다 실제 성수기가 다를 수 있어(예: 교육 캠페인은 겨울방학·신학기 시즌 등) 하드코딩된
-    PEAK_MONTHS 대신 실제 데이터 기반으로 판단한다. 데이터가 너무 적어 캘린더월 종류가
+    내부적으로 "성수기"는 광고비를 많이 집행하는 달을 의미한다(회귀의 성수기 더미 변수 용도,
+    metric="광고비"가 기본값). DB단가 효율과는 별개 개념 — 오히려 성수기는 경쟁이 치열해져
+    DB단가가 나빠지는 경향이 있다(아래 detect_efficiency_months 참고).
+    자연유입 채널처럼 광고비 컬럼이 없는 데이터(DB수만 존재)에는 metric="DB수"로 호출한다.
+    캠페인마다 다를 수 있어 실제 데이터 기반으로 판단하며, 데이터가 너무 적어 캘린더월 종류가
     부족하면 PEAK_MONTHS로 대체한다.
     """
     month_num = camp_df["월"].str.slice(5, 7).astype(int)
-    monthly_avg = camp_df.assign(_월num=month_num).groupby("_월num")["DB수"].mean()
+    monthly_avg = camp_df.assign(_월num=month_num).groupby("_월num")[metric].mean()
     if len(monthly_avg) < MIN_CALENDAR_MONTHS_FOR_SEASONALITY:
         return set(PEAK_MONTHS)
     top_months = monthly_avg.sort_values(ascending=False).head(top_n).index.tolist()
@@ -35,17 +41,36 @@ def detect_peak_months(camp_df: pd.DataFrame, top_n: int = 4) -> set[int]:
 def detect_efficiency_months(camp_df: pd.DataFrame, top_n: int = 4) -> set[int]:
     """캠페인의 실제 월별 DB단가(광고비/DB수) 패턴에서 효율이 가장 좋은(단가가 낮은) top_n개 달 감지.
 
-    성수기(DB수가 많이 나오는 달)와는 별개 개념 — 물량이 아니라 "돈 대비 효율"이 좋은 달이라
-    캠페인마다 패턴이 다르게 나타난다 (참고용 인사이트, 회귀 계산 자체에는 쓰이지 않음).
+    "성수기(광고비 집행이 많은 달)"와는 별개 개념 — 오히려 성수기는 경쟁이 치열해져 DB단가가
+    나빠지는 경향이 있어, 광고비를 상대적으로 덜 쓰는 시기 중에서 효율이 가장 좋은 달을 찾는다.
+    다만 평균 대비 지나치게 적게 쓴 달(LOW_SPEND_EXCLUDE_RATIO 미만)은 "단가가 우연히 낮아 보이는
+    착시"일 수 있어 제외하고 판단한다 (참고용 인사이트, 회귀 계산 자체에는 쓰이지 않음).
     """
     camp_df = camp_df.copy()
-    month_num = camp_df["월"].str.slice(5, 7).astype(int)
-    db단가 = camp_df["광고비"] / camp_df["DB수"]
+    avg_spend = camp_df["광고비"].mean()
+    if not avg_spend or avg_spend <= 0:
+        return set()
+    filtered = camp_df[camp_df["광고비"] >= avg_spend * LOW_SPEND_EXCLUDE_RATIO]
+
+    month_num = filtered["월"].str.slice(5, 7).astype(int)
+    db단가 = filtered["광고비"] / filtered["DB수"]
     monthly_avg = db단가.groupby(month_num).mean()
     if len(monthly_avg) < MIN_CALENDAR_MONTHS_FOR_SEASONALITY:
         return set()
     top_months = monthly_avg.sort_values(ascending=True).head(top_n).index.tolist()
     return {int(m) for m in top_months}
+
+
+def _campaign_efficiency_months(
+    camp_df: pd.DataFrame, campaign: str, media_df: pd.DataFrame | None
+) -> set[int]:
+    """효율 우수월 판단. media_df가 있고 이 캠페인의 핵심 채널(EFFICIENCY_KEY_CHANNELS)이 정의돼
+    있으면 그 채널들의 실적만으로 판단하고, 없으면 df 전체 평균으로 판단한다(fallback)."""
+    if media_df is not None and campaign in EFFICIENCY_KEY_CHANNELS:
+        key_channel_df = build_key_channel_monthly(media_df, campaign)
+        if key_channel_df is not None:
+            return detect_efficiency_months(key_channel_df)
+    return detect_efficiency_months(camp_df)
 
 
 def _is_peak(월_series: pd.Series, peak_months: set[int] | None = None) -> np.ndarray:
@@ -260,16 +285,19 @@ def build_budget_recommendations(
     target_prices: dict | None = None,
     target_month: str | None = None,
     reference_df: pd.DataFrame | None = None,
+    media_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """캠페인별 회귀모델 학습 + 예산 추천 결과.
 
     method: "target_price"(목표 DB단가를 만족하는 최대 예산) 또는 "inflection"(DB단가 급등 변곡점)
     target_prices: {캠페인명: 목표DB단가}. 미지정 캠페인은 최근 3개월 실제 DB단가를 목표로 사용.
-    target_month: 예측 대상월("YYYY-MM"). 캠페인별로 자동 감지된 성수기 여부 판단에 사용.
-    성수기는 캠페인마다 실제 DB수 패턴에서 자동 감지하며(detect_peak_months), 캠페인마다 다를 수 있다.
+    target_month: 예측 대상월("YYYY-MM"). 캠페인별로 자동 감지된 성수기(집행 기준) 여부 판단에 사용.
+    성수기는 캠페인마다 실제 광고비 패턴에서 자동 감지하며(detect_peak_months), 캠페인마다 다를 수 있다.
     reference_df: "참고예산"(화면 표시용 전년동월 비교치) 계산에 쓸 데이터. 미지정 시 df를 그대로 사용.
     회귀는 유료매체 전용 확장 데이터(df)로 하되, 참고예산은 실제 총광고비 공식 데이터(reference_df)로
     보여주고 싶을 때 서로 다른 데이터를 넘길 수 있다.
+    media_df: "효율좋은월" 판단에 쓸 매체별 원본 데이터. 주어지면 캠페인별 핵심 채널
+    (EFFICIENCY_KEY_CHANNELS)의 실적만으로 효율 우수월을 판단하고, 없으면 df 전체 평균으로 판단한다.
     """
     target_prices = target_prices or {}
     reference_source = reference_df if reference_df is not None else df
@@ -312,7 +340,7 @@ def build_budget_recommendations(
             "모델신뢰도(R2)": model_info["loocv_r2"],
             "모델차수": model_info["degree"],
             "성수기월": sorted(peak_months),
-            "효율좋은월": sorted(detect_efficiency_months(camp_df)),
+            "효율좋은월": sorted(_campaign_efficiency_months(camp_df, campaign, media_df)),
             "비고": note,
         })
 
@@ -336,7 +364,7 @@ def fit_organic_trend(organic_monthly: pd.DataFrame, campaign: str) -> dict | No
     if len(camp_df) < 3:
         return None
 
-    peak_months = detect_peak_months(camp_df)
+    peak_months = detect_peak_months(camp_df, metric="DB수")
     month_index = camp_df["월"].apply(_month_to_index).to_numpy(dtype=float)
     is_peak = _is_peak(camp_df["월"], peak_months)
     log_db = np.log1p(camp_df["DB수"].to_numpy(dtype=float))

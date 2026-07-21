@@ -182,7 +182,7 @@ def run_simulation(
 
     base_rec = build_budget_recommendations(
         model_df, method="target_price", target_prices=target_prices, target_month=target_month,
-        reference_df=df,
+        reference_df=df, media_df=media_df,
     )
     reference_map = base_rec.set_index("캠페인구분")["참고예산"]  # 화면 표시용(전체 총광고비 기준)
     recent_avg_map = base_rec.set_index("캠페인구분")["최근3개월평균"]  # 화면 표시용 보조 참고치

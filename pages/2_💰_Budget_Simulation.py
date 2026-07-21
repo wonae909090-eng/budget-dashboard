@@ -211,14 +211,17 @@ st.subheader("예산 시뮬레이션 결과")
 base_rec = sim["base_recommendation"]
 with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자동 감지)"):
     st.caption(
-        "성수기월 = DB수가 많이 나오는 달(회귀 모델의 성수기 반영에 사용). "
-        "효율좋은월 = DB단가가 낮아 효율이 좋은 달(참고용 — 회귀 계산에는 쓰이지 않음)."
+        "**성수기월** = 광고비 집행이 많은 달(회귀 모델의 성수기 더미로 사용). "
+        "경쟁이 치열해져 오히려 DB단가는 좋지 않은 경향이 있습니다.\n\n"
+        "**효율좋은월** = DB단가가 좋은 달(참고용 — 회귀 계산에는 쓰이지 않음). "
+        "핵심 채널(키즈: 메타·네이버GFA / 초등: 메타 / 중학: 메타·GDN) 실적 기준이며, "
+        "평균 대비 예산을 크게 줄여서 단가가 낮아 보이는 달은 제외하고 판단합니다."
     )
     for _, row in base_rec.iterrows():
         campaign_badge(row["캠페인구분"])
         peak_str = ", ".join(f"{m}월" for m in row["성수기월"])
         eff_str = ", ".join(f"{m}월" for m in row["효율좋은월"]) if row["효율좋은월"] else "데이터 부족으로 판단 불가"
-        st.caption(f"성수기월: {peak_str}  ·  효율좋은월: {eff_str}")
+        st.caption(f"성수기월(광고비 집행 기준): {peak_str}  ·  효율좋은월: {eff_str}")
 
 SCENARIO_DESC = {
     "보수": "참고예산(전년 동월, 유료매체 기준) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",

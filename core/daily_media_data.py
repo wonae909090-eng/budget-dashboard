@@ -109,6 +109,36 @@ def build_organic_monthly(media_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# 캠페인별로 "효율이 좋았던 달"을 판단할 때 기준으로 삼는 핵심 채널.
+# 담당자 판단 기준 — 캠페인 전체 매체 믹스가 아니라 이 채널들의 실적으로 효율 우수월을 가른다.
+EFFICIENCY_KEY_CHANNELS = {
+    "키즈": ["메타", "네이버GFA"],
+    "초등": ["메타"],
+    "중학": ["메타", "GDN"],
+}
+
+
+def build_key_channel_monthly(media_df: pd.DataFrame, campaign: str) -> pd.DataFrame | None:
+    """캠페인의 효율 판단 핵심 채널(EFFICIENCY_KEY_CHANNELS)만 모아 월별 합산 (광고비, DB수).
+
+    핵심 채널이 정의되지 않았거나 데이터가 없으면 None을 반환한다.
+    """
+    channels = EFFICIENCY_KEY_CHANNELS.get(campaign)
+    if not channels:
+        return None
+    sub = media_df[
+        (media_df["캠페인구분"] == campaign) & (media_df["매체"].isin(channels))
+    ].dropna(subset=["광고비", "DB수"])
+    if sub.empty:
+        return None
+    return (
+        sub.groupby("월", as_index=False)
+        .agg(광고비=("광고비", "sum"), DB수=("DB수", "sum"))
+        .sort_values("월")
+        .reset_index(drop=True)
+    )
+
+
 def estimate_fixed_cost(fixed_cost_df: pd.DataFrame, campaign: str, n: int = 3) -> float:
     """캠페인의 최근 n개월 평균 고정비용으로 다음 달 고정비용을 추정 (자동 기본값, 사용자가 조정 가능)."""
     camp_df = fixed_cost_df[fixed_cost_df["캠페인구분"] == campaign].sort_values("월")
