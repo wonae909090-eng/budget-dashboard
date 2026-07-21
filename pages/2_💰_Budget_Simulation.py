@@ -209,8 +209,8 @@ sim = st.session_state["budget_simulation"]
 st.subheader("예산 시뮬레이션 결과")
 st.caption(
     "⚠️ 회귀 모델(추천예산 계산 자체)은 최신 달까지 포함한 전체 기간 데이터로 학습됩니다. "
-    "아래 표의 '전년동월'과 '최근3개월평균'(회색 음영)은 계산 결과가 아니라, 그 추천이 과거 대비 "
-    "얼마나 큰 변화인지 보여주는 비교용 숫자일 뿐입니다. 실제로 확인해야 할 값은 "
+    "아래 표의 '전년동월 집행비용'과 '최근3개월 평균 집행비용'(회색 음영)은 계산 결과가 아니라, "
+    "그 추천이 과거 대비 얼마나 큰 변화인지 보여주는 비교용 숫자일 뿐입니다. 실제로 확인해야 할 값은 "
     "'시나리오예산 / 예상DB수 / 예상DB단가'입니다."
 )
 
@@ -230,7 +230,7 @@ with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자
         st.caption(f"성수기월(광고비 집행 기준): {peak_str}  ·  효율좋은월: {eff_str}")
 
 SCENARIO_DESC = {
-    "보수": "전년동월(유료매체 기준) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
+    "보수": "전년동월 집행비용(유료매체 기준) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
     "중립": "회귀모델 추천 예산 총합을 목표 DB수 비중으로 재배분",
     "적극": "회귀모델 추천 예산 총합을 DB단가 효율이 좋은 캠페인에 집중 배분",
 }
@@ -257,14 +257,22 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             m4.metric("목표 달성률", "목표 미입력")
 
         st.markdown("**캠페인별 시나리오예산 (회색 음영 = 비교 참고용, 계산 결과 아님)**")
-        display_table = table.rename(columns={"참고예산": "전년동월"})
-        main_cols = ["캠페인구분", "전년동월", "최근3개월평균", "시나리오예산", "예상DB수", "예상DB단가", "모델신뢰도(R2)"]
+        display_table = table.rename(
+            columns={"참고예산": "전년동월 집행비용", "최근3개월평균": "최근3개월 평균 집행비용"}
+        )
+        main_cols = [
+            "캠페인구분", "전년동월 집행비용", "최근3개월 평균 집행비용",
+            "시나리오예산", "예상DB수", "예상DB단가", "모델신뢰도(R2)",
+        ]
         styled_table = (
-            style_campaign_rows(display_table[main_cols], neutral_cols=["전년동월", "최근3개월평균"])
+            style_campaign_rows(
+                display_table[main_cols],
+                neutral_cols=["전년동월 집행비용", "최근3개월 평균 집행비용"],
+            )
             .format(
                 {
-                    "전년동월": "{:,.0f}",
-                    "최근3개월평균": "{:,.0f}",
+                    "전년동월 집행비용": "{:,.0f}",
+                    "최근3개월 평균 집행비용": "{:,.0f}",
                     "시나리오예산": "{:,.0f}",
                     "예상DB수": "{:,.0f}",
                     "예상DB단가": "{:,.0f}",
@@ -291,13 +299,14 @@ for tab, name in zip(tabs, ["보수", "중립", "적극"]):
             st.dataframe(styled_detail, width="stretch")
 
         chart_df = display_table.melt(
-            id_vars="캠페인구분", value_vars=["전년동월", "최근3개월평균", "시나리오예산"],
+            id_vars="캠페인구분",
+            value_vars=["전년동월 집행비용", "최근3개월 평균 집행비용", "시나리오예산"],
             var_name="구분", value_name="예산",
         )
         fig = px.bar(
             chart_df, x="캠페인구분", y="예산", color="캠페인구분", pattern_shape="구분",
             color_discrete_map=CAMPAIGN_COLORS, barmode="group",
-            title=f"[{name}] 캠페인별 전년동월·최근3개월평균 vs 시나리오예산",
+            title=f"[{name}] 캠페인별 전년동월·최근3개월 평균 집행비용 vs 시나리오예산",
         )
         st.plotly_chart(fig, width="stretch")
 
