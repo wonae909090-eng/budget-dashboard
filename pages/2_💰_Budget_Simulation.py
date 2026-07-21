@@ -229,6 +229,28 @@ with st.expander("📅 캠페인별 계절성 인사이트 (데이터 기반 자
         eff_str = ", ".join(f"{m}월" for m in row["효율좋은월"]) if row["효율좋은월"] else "데이터 부족으로 판단 불가"
         st.caption(f"성수기월(광고비 집행 기준): {peak_str}  ·  효율좋은월: {eff_str}")
 
+with st.expander("❓ 보수 / 중립 / 적극, 어떻게 다른가요?"):
+    st.markdown(
+        "- **보수**: 캠페인마다 따로따로, 전년동월 집행비용 대비 아주 조금만(±10%) 조정합니다.\n"
+        "- **중립**: 총예산은 비슷하게 유지하되, **물량(DB수)이 많이 나올 곳**에 더 배분합니다.\n"
+        "- **적극**: 총예산은 비슷하게 유지하되, **효율(자기 기준 대비 단가)이 좋은 곳**에 몰아줍니다.\n\n"
+        "중립과 적극은 총예산은 비슷해도 캠페인 간 배분은 정반대로 갈리는 경우가 많습니다 — "
+        "아래는 이번 시뮬레이션에서 전년동월 집행비용 대비 실제로 어떻게 달라졌는지 보여줍니다."
+    )
+    compare_rows = []
+    for scenario_name in ["보수", "중립", "적극"]:
+        for _, row in sim["scenarios"][scenario_name]["table"].iterrows():
+            change_pct = (
+                (row["시나리오예산"] - row["참고예산"]) / row["참고예산"] * 100 if row["참고예산"] else 0.0
+            )
+            compare_rows.append(
+                {"캠페인구분": row["캠페인구분"], "시나리오": scenario_name, "전년동월 대비 변화율": change_pct}
+            )
+    compare_df = pd.DataFrame(compare_rows).pivot(
+        index="캠페인구분", columns="시나리오", values="전년동월 대비 변화율"
+    )[["보수", "중립", "적극"]]
+    st.dataframe(compare_df.style.format("{:+.1f}%"), width="stretch")
+
 SCENARIO_DESC = {
     "보수": "전년동월 집행비용(유료매체 기준) 대비 ±10% 이내에서 회귀 추천예산 방향으로 소폭 조정",
     "중립": "회귀모델 추천 예산 총합을 목표 DB수 비중으로 재배분",
